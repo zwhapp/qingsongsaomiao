@@ -1,0 +1,50 @@
+*.iml
+.gradle
+/local.properties
+/.idea
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+/app/build
+/app/release
+*.apk
+*.aab
+*.keystore
+!debug.keystore
+
+# --- 签名密钥与凭据：绝不允许进入版本库 ---
+# .jks 是 application 所有权的证明，泄露等于别人可以冒充你发布更新。
+# keystore.properties 里是明文口令。
+*.jks
+keystore.properties
+
+# 本地生成、不参与构建的目录
+/_deprecated
+
+# --- 公开仓库合规排除（详见 THIRD-PARTY-NOTICES.md）---
+# doc_segmentation.tflite 为 GPL-3.0 模型（训练数据 CC BY-NC-SA），
+# 进公开仓库即构成对外分发，违反许可。自用版构建请按 NOTICES 说明自行放置。
+app/src/main/assets/doc_segmentation.tflite
+
+# GPL 模型下载物与内部调试目录
+/_model_dl
+/_bug151
+
+# 训练数据与产物：体积过大（GB 级），且 synth* 由受许可约束的数据生成
+/tools/train/data/
+/tools/train/out_hand/best.keras
+/tools/train/evalout_hand/
+
+# 本地产物目录（APK 已被上面 *.apk 覆盖，这里兜底其余文件）
+/outputs/
+
+# 工作区运行时文件
+*.log
+nohup.out
+
+# doc_seg (GPL/fairscan-gpl) training artifacts - never publish
+tools/train/out_v*/
+tools/train/evalout_v*/

@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">轻松扫描</string>
+
+    <!-- 首页 -->
+    <string name="home_title">轻松扫描</string>
+    <string name="home_subtitle">离线文档增强 · 不上传 · 无会员</string>
+    <string name="action_capture">拍照扫描</string>
+    <string name="action_import">从相册导入</string>
+    <string name="action_documents">我的文档</string>
+    <string name="empty_documents">还没有扫描记录\n点击上方按钮开始</string>
+
+    <!-- 相机 -->
+    <string name="camera_hint">将文档放入取景框，尽量保持平整</string>
+    <string name="camera_capture">拍摄</string>
+    <string name="camera_flash_auto">自动</string>
+    <string name="camera_flash_on">开启</string>
+    <string name="camera_flash_off">关闭</string>
+
+    <!-- 裁剪 / 矫正 -->
+    <string name="crop_title">调整边缘</string>
+    <string name="crop_hint">拖动四角，让边框贴合纸张边缘</string>
+    <string name="action_auto_detect">自动检测</string>
+    <string name="action_reset">重置</string>
+    <string name="action_next">下一步</string>
+    <string name="action_back">上一步</string>
+    <string name="action_confirm">完成</string>
+    <string name="action_cancel">取消</string>
+
+    <!-- 增强 -->
+    <string name="enhance_title">增强效果</string>
+    <string name="filter_original">原图</string>
+    <string name="filter_magic">去阴影</string>
+    <string name="filter_bw">黑白文档</string>
+    <string name="filter_gray">灰度</string>
+    <string name="filter_enhance">高清增强</string>
+    <string name="filter_upscale2x">放大 2 倍</string>
+    <string name="filter_upscale4x">放大 4 倍</string>
+    <string name="enhance_processing">正在处理…</string>
+    <string name="enhance_compare_hint">长按画面查看原图对比</string>
+
+    <!-- 导出 -->
+    <string name="export_title">导出</string>
+    <string name="export_pdf">导出为 PDF</string>
+    <string name="export_images">导出为图片</string>
+    <string name="export_page_count">共 %1$d 页</string>
+    <string name="export_done">已导出到「%1$s」</string>
+    <string name="export_share">分享</string>
+
+    <!-- 文档列表 -->
+    <string name="doc_pages">%1$d 页</string>
+    <string name="doc_delete">删除</string>
+    <string name="doc_rename">重命名</string>
+    <string name="doc_delete_confirm">确定删除这份文档？此操作不可撤销。</string>
+    <string name="doc_export_pdf">导出 PDF</string>
+
+    <!-- 通用 -->
+    <string name="action_save">保存</string>
+    <string name="action_ok">确定</string>
+    <string name="error_camera_permission">需要相机权限才能拍照扫描</string>
+    <string name="error_processing">处理失败：%1$s</string>
+    <string name="offline_badge">100%% 离线处理</string>
+</resources>

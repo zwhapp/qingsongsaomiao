@@ -1,0 +1,34 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 扫描文档图标：纸张轮廓 + 四角取景框 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M38,30 h26 l12,12 v36 a2,2 0 0 1 -2,2 h-36 a2,2 0 0 1 -2,-2 v-46 a2,2 0 0 1 2,-2 z" />
+    <path
+        android:fillColor="#B7E4D0"
+        android:pathData="M64,30 l12,12 h-12 z" />
+    <!-- 四角取景标记 -->
+    <path
+        android:strokeColor="#FFD166"
+        android:strokeWidth="2.6"
+        android:pathData="M30,44 v-8 h8" />
+    <path
+        android:strokeColor="#FFD166"
+        android:strokeWidth="2.6"
+        android:pathData="M78,44 v-8 h-8" />
+    <path
+        android:strokeColor="#FFD166"
+        android:strokeWidth="2.6"
+        android:pathData="M30,64 v8 h8" />
+    <path
+        android:strokeColor="#FFD166"
+        android:strokeWidth="2.6"
+        android:pathData="M78,64 v8 h-8" />
+    <!-- 文本行 -->
+    <path android:fillColor="#1B6B4A" android:pathData="M46,52 h22 v2.6 h-22 z" />
+    <path android:fillColor="#1B6B4A" android:pathData="M46,59 h22 v2.6 h-22 z" />
+    <path android:fillColor="#1B6B4A" android:pathData="M46,66 h13 v2.6 h-13 z" />
+</vector>

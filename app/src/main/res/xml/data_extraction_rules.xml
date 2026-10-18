@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 12+ 的备份/迁移规则（android:dataExtractionRules）。
+
+  与 backup_rules.xml 保持一致的对应关系，详见该文件的注释。
+  关键点同样有两个：
+    1. exports 在 getExternalFilesDir() 下，属于 external 域。
+    2. 规则里没有 cache 域，临时文件不必也不能在这里排除。
+
+  device-transfer（换机直传）只带数据库和页面原图；
+  exports 里的 PDF 是派生产物，可由原图重新生成，故不参与换机传输。
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <include domain="database" path="." />
+        <include domain="file" path="documents/" />
+        <include domain="external" path="Pictures/exports/" />
+    </cloud-backup>
+    <device-transfer>
+        <include domain="database" path="." />
+        <include domain="file" path="documents/" />
+    </device-transfer>
+</data-extraction-rules>

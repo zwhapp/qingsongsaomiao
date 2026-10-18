@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 11 及以下的备份规则（android:fullBackupContent）。
+
+  这里必须与代码里的实际落盘位置一一对应，否则 release 构建的 lint 会报
+  "exports/ is not in an included path" 之类的 FullBackupContent 错误。
+
+  对应关系（见 data/DocumentStore.kt）：
+    database/          -> Room 数据库（扫描文档元数据），要备份
+    files/documents/   -> 页面图片，体积大，也要备份
+    external/Pictures/exports/ -> 导出的 PDF/TXT，用户可见的产物
+    cache/             -> 临时拍摄文件，无需备份，且 cache 域不允许写进规则文件
+
+  两个坑：
+    1. exports 落在 getExternalFilesDir()，属于 **external** 域，不是 file 域。
+       写成 domain="file" 会报 "not in an included path"。
+    2. full-backup-content 不支持 domain="cache"。cache 目录本来就不会被
+       自动备份，所以直接不写即可（写 <exclude domain="cache"> 是多余的，
+       还会触发 "Unexpected domain cache" 错误）。
+-->
+<full-backup-content>
+    <include domain="database" path="." />
+    <include domain="file" path="documents/" />
+    <include domain="external" path="Pictures/exports/" />
+</full-backup-content>

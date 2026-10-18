@@ -1,0 +1,155 @@
+# ---------------------------------------------------------------------------
+# Generate the release signing keystore for DocScanPro (run ONCE).
+#
+# Usage (from the project root):
+#     .\gen-keystore.ps1                    # interactive, asks for password
+#     .\gen-keystore.ps1 -Password 'xxx'    # non-interactive
+#     .\gen-keystore.ps1 -ReadOnly          # just print the cert fingerprint
+#
+# After it finishes, do two things immediately:
+#   1. Back up docscan-release.jks -- if you lose it you can never ship an
+#      update to an already-published app.
+#   2. Remember the password -- it is equally unrecoverable.
+#
+# NOTE: this file is deliberately pure ASCII. Windows PowerShell 5.1 decodes
+# a BOM-less UTF-8 file as ANSI, which turns Chinese comments into garbage and
+# produces bogus syntax errors. Keep this file ASCII-only.
+# ---------------------------------------------------------------------------
+
+param(
+    [string]$Password = '',
+    [string]$Alias = 'docscan',
+    [switch]$ReadOnly
+)
+
+$ErrorActionPreference = 'Stop'
+
+# --- Locate keytool: prefer the JDK 17 that is dedicated to builds -------------
+$jdkHome = 'D:\Android\JDK17'
+$keytool = Join-Path $jdkHome 'bin\keytool.exe'
+if (-not (Test-Path $keytool)) {
+    $keytool = 'keytool'
+    Write-Host "JDK 17 not found at $jdkHome, falling back to keytool on PATH." -ForegroundColor Yellow
+}
+
+$store = Join-Path $PSScriptRoot 'docscan-release.jks'
+$props = Join-Path $PSScriptRoot 'keystore.properties'
+
+$dname = 'CN=OpenScan, OU=DocScanPro, O=OpenScan, L=Shenzhen, ST=Guangdong, C=CN'
+
+# --- ReadOnly mode: show what is already there ---------------------------------
+if ($ReadOnly) {
+    if (-not (Test-Path $store)) {
+        Write-Host "No keystore found at $store" -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "Keystore: $store"
+    Write-Host ""
+    # -list needs the password; if not supplied we can still dump the cert hash
+    # by asking the user to type it, so just tell them the command instead.
+    Write-Host "To inspect it, run:" -ForegroundColor Cyan
+    Write-Host "  & '$keytool' -list -v -keystore '$store' -alias $Alias"
+    exit 0
+}
+
+# --- Guard: never silently overwrite an existing keystore ----------------------
+if (Test-Path $store) {
+    Write-Host "Keystore already exists: $store" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "Regenerating would invalidate every signature made with the current key," -ForegroundColor Yellow
+    Write-Host "and the app could never be updated on any device that already has it." -ForegroundColor Yellow
+    Write-Host "If you really want a fresh key, delete the file first."
+    exit 0
+}
+
+# --- Resolve the password ------------------------------------------------------
+if ([string]::IsNullOrEmpty($Password)) {
+    Write-Host "Generating keystore: $store"
+    Write-Host ""
+    Write-Host "You will be prompted for a password twice." -ForegroundColor Cyan
+    Write-Host "Use at least 12 characters, and SAVE IT somewhere safe." -ForegroundColor Cyan
+    Write-Host "keytool requires at least 6 characters; anything under 12 is weak." -ForegroundColor Cyan
+    Write-Host ""
+} else {
+    if ($Password.Length -lt 6) {
+        Write-Host "Password must be at least 6 characters (keytool requirement)." -ForegroundColor Red
+        exit 1
+    }
+    if ($Password.Length -lt 12) {
+        Write-Host "Warning: password is shorter than 12 characters." -ForegroundColor Yellow
+    }
+    Write-Host "Generating keystore: $store"
+}
+
+# --- Generate ------------------------------------------------------------------
+# RSA 2048, validity 10000 days (~27 years, expires 2054).
+# Google Play requires the key to remain valid past 2033; 10000 days is safe.
+#
+# This is a JKS keystore. Modern Android tooling defaults to PKCS#12; JKS is kept
+# deliberately because it is what keytool produces without extra flags and what
+# every Android signing guide assumes. Either format works with apksigner.
+$ktArgs = @(
+    '-genkeypair'
+    '-v'
+    '-keystore', $store
+    '-alias', $Alias
+    '-keyalg', 'RSA'
+    '-keysize', '2048'
+    '-validity', '10000'
+    '-dname', $dname
+)
+if (-not [string]::IsNullOrEmpty($Password)) {
+    # Non-interactive: keytool still wants the password for both store and key.
+    $ktArgs += @('-storepass', $Password, '-keypass', $Password)
+}
+
+& $keytool @ktArgs
+if ($LASTEXITCODE -ne 0) {
+    Write-Host ""
+    Write-Host "keytool failed with exit code $LASTEXITCODE" -ForegroundColor Red
+    exit $LASTEXITCODE
+}
+
+# --- Report --------------------------------------------------------------------
+Write-Host ""
+Write-Host "Done. Keystore created at:" -ForegroundColor Green
+Write-Host "  $store"
+Write-Host ""
+
+if (-not [string]::IsNullOrEmpty($Password)) {
+    # Non-interactive run: also drop keystore.properties so gradle can pick the
+    # credentials up automatically and you never have to type them again.
+    $lines = @(
+        '# Auto-generated by gen-keystore.ps1 -- DO NOT COMMIT, DO NOT SHARE.'
+        '# This file contains your signing password in plain text.'
+        '# It is already listed in .gitignore.'
+        "storeFile=docscan-release.jks"
+        "storePassword=$Password"
+        "keyAlias=$Alias"
+        "keyPassword=$Password"
+    )
+    Set-Content -Path $props -Value $lines -Encoding UTF8
+    Write-Host "Credentials written to:" -ForegroundColor Green
+    Write-Host "  $props"
+    Write-Host ""
+    Write-Host "WARNING: that file holds your password in plain text." -ForegroundColor Yellow
+    Write-Host "Keep it off any shared drive and never commit it." -ForegroundColor Yellow
+    Write-Host ""
+}
+
+Write-Host "NEXT STEPS" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "1. BACK UP the .jks file and the password now." -ForegroundColor White
+Write-Host "   Lose them and you can never update this app again."
+Write-Host ""
+Write-Host "2. Build a signed release APK. If keystore.properties was written," -ForegroundColor White
+Write-Host "   first make app/build.gradle.kts read it (ask me to wire this up),"
+Write-Host "   otherwise pass the four -P flags on the command line (one line):"
+Write-Host ""
+Write-Host "  .\gradlew.bat assembleRelease -Pandroid.injected.signing.store.file=$store -Pandroid.injected.signing.store.password=YOUR_PASSWORD -Pandroid.injected.signing.key.alias=$Alias -Pandroid.injected.signing.key.password=YOUR_PASSWORD"
+Write-Host ""
+Write-Host "3. Or just use Android Studio:" -ForegroundColor White
+Write-Host "   Build > Generate Signed App Bundle / APK"
+Write-Host ""
+Write-Host "4. Verify the result:" -ForegroundColor White
+Write-Host "   & '$keytool' -list -v -keystore '$store' -alias $Alias"

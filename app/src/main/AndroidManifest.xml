@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- 相机拍摄文档 -->
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <!-- 仅 Android 9 及以下需要，用于保存导出文件 -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
+
+    <uses-feature
+        android:name="android.hardware.camera.any"
+        android:required="true" />
+    <uses-feature
+        android:name="android.hardware.camera.autofocus"
+        android:required="false" />
+
+    <!--
+      本应用完全离线，不主动声明 INTERNET / ACCESS_NETWORK_STATE。
+
+      但 ML Kit 的 AAR 会在清单合并时自动注入这两个权限（它的部分能力
+      依赖联网下载模型）。我们用的是内嵌模型版本，运行时不需要网络，
+      所以这里用 tools:node="remove" 把它们从最终清单里剔除。
+
+      验证方式（构建后执行）：
+        aapt2 dump badging app/build/outputs/apk/debug/app-debug.apk | grep uses-permission
+      正确结果里应当看不到 INTERNET。
+
+      如果哪天需要联网功能，把下面两个 uses-permission 删掉即可。
+    -->
+    <uses-permission
+        android:name="android.permission.INTERNET"
+        tools:node="remove" />
+    <uses-permission
+        android:name="android.permission.ACCESS_NETWORK_STATE"
+        tools:node="remove" />
+
+    <application
+        android:name=".DocScanApplication"
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.QingSongScan"
+        tools:targetApi="34">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode"
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.QingSongScan">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- 允许从文件管理器直接"用本应用打开"图片 -->
+        <activity
+            android:name=".ui.screen.ImportActivity"
+            android:exported="true"
+            android:theme="@style/Theme.QingSongScan.Transparent">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
+        </activity>
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+    </application>
+
+</manifest>
