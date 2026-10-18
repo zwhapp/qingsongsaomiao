@@ -18,24 +18,19 @@
         android:required="false" />
 
     <!--
-      本应用完全离线，不主动声明 INTERNET / ACCESS_NETWORK_STATE。
+      扫描/处理仍完全离线。唯一的联网用途是分发版的「检查更新」：
+      只读取 GitHub Releases 的公开 API 拿最新版本号，不上传任何用户数据。
+      （ML Kit 的 AAR 在清单合并时会自动注入 INTERNET，这里顺势显式声明。）
 
-      但 ML Kit 的 AAR 会在清单合并时自动注入这两个权限（它的部分能力
-      依赖联网下载模型）。我们用的是内嵌模型版本，运行时不需要网络，
-      所以这里用 tools:node="remove" 把它们从最终清单里剔除。
-
-      验证方式（构建后执行）：
-        aapt2 dump badging app/build/outputs/apk/debug/app-debug.apk | grep uses-permission
-      正确结果里应当看不到 INTERNET。
-
-      如果哪天需要联网功能，把下面两个 uses-permission 删掉即可。
+      ACCESS_NETWORK_STATE 对检查更新无用，继续剔除。
     -->
-    <uses-permission
-        android:name="android.permission.INTERNET"
-        tools:node="remove" />
+    <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission
         android:name="android.permission.ACCESS_NETWORK_STATE"
         tools:node="remove" />
+
+    <!-- 仅用于安装从 GitHub 下载的更新 APK（Android 8+ 需用户授权"安装未知应用"） -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
         android:name=".DocScanApplication"

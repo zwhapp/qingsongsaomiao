@@ -23,29 +23,43 @@ import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.outlined.BugReport
+import androidx.compose.material.icons.outlined.CloudDownload
 import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import android.widget.Toast
 import com.openscan.docscan.R
+import com.openscan.docscan.core.UpdateManager
 import com.openscan.docscan.ui.theme.AppCornerRadius
+import kotlinx.coroutines.launch
+import java.io.File
 
 /**
  * 首页：三个入口 + 离线声明。
@@ -67,13 +81,14 @@ fun HomeScreen(
     // 设备，给自己开"打赏自己"的入口没有意义；分发版（无模型、可外发）才需要。
     // 判定方式与 SelfCheck 第 6 项一致：versionName 含 "selfuse"。
     val context = androidx.compose.ui.platform.LocalContext.current
-    val isSelfuse = remember {
+    val versionName = remember {
         runCatching {
             context.packageManager
                 .getPackageInfo(context.packageName, 0)
                 .versionName.orEmpty()
-        }.getOrDefault("").contains("selfuse")
+        }.getOrDefault("")
     }
+    val isSelfuse = remember { versionName.contains("selfuse") }
     Scaffold(
         contentWindowInsets = WindowInsets.systemBars,
         containerColor = MaterialTheme.colorScheme.background
@@ -163,6 +178,12 @@ fun HomeScreen(
                 )
             }
 
+            // 版本号 + 检查更新（仅分发版）：GitHub Releases 是唯一的分发渠道，
+            // 自用版开发者手动 adb 安装，无需在线更新。
+            if (!isSelfuse) {
+                UpdateEntry(currentVersion = versionName)
+            }
+
             Spacer(Modifier.weight(1f))
 
             AnimatedVisibility(visible = permissionDeniedHint) {
@@ -223,6 +244,148 @@ private fun LowKeyEntry(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
+    }
+}
+
+/**
+ * 版本号标注 + 检查更新（仅分发版）。
+ *
+ * 流程：点入口 → 查 GitHub Releases latest → 有新版弹窗 → 下载到 cache →
+ * 拉起系统安装器。全程只有"读版本号"和"下 APK"两个网络动作。
+ */
+@Composable
+private fun UpdateEntry(currentVersion: String) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    var checking by remember { mutableStateOf(false) }
+    var pending by remember { mutableStateOf<UpdateManager.UpdateInfo?>(null) }
+    var downloading by remember { mutableStateOf(false) }
+    var progress by remember { mutableFloatStateOf(0f) }
+    // 上一次下载完成的包：安装授权被拒后回来，点入口直接重装，不用重新下载
+    var downloadedFile by remember { mutableStateOf<File?>(null) }
+
+    fun check() {
+        // 上个版本的缓存包没必要留着
+        runCatching { File(context.cacheDir, "update/update.apk").delete() }
+        checking = true
+        scope.launch {
+            when (val r = UpdateManager.checkLatest(currentVersion)) {
+                is UpdateManager.CheckResult.Available -> pending = r.info
+                is UpdateManager.CheckResult.UpToDate ->
+                    Toast.makeText(context, "已是最新版本", Toast.LENGTH_SHORT).show()
+                is UpdateManager.CheckResult.Failed ->
+                    Toast.makeText(
+                        context,
+                        "检查失败：${r.reason}（GitHub 可能暂时不可达，请稍后再试）",
+                        Toast.LENGTH_LONG
+                    ).show()
+            }
+            checking = false
+        }
+    }
+
+    fun download(info: UpdateManager.UpdateInfo) {
+        downloading = true
+        progress = 0f
+        scope.launch {
+            runCatching {
+                UpdateManager.downloadApk(context, info.apkUrl) { p -> progress = p }
+            }.onSuccess { f ->
+                downloading = false
+                pending = null
+                downloadedFile = f
+                if (!UpdateManager.installApk(context, f)) {
+                    Toast.makeText(
+                        context,
+                        "请先在设置中允许本应用\"安装未知应用\"，然后回来再点一次\"检查更新\"",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }.onFailure { e ->
+                downloading = false
+                Toast.makeText(
+                    context,
+                    "下载失败：${e.message ?: e::class.java.simpleName}",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+    }
+
+    LowKeyEntry(
+        icon = Icons.Outlined.CloudDownload,
+        text = if (checking) {
+            "正在检查更新…"
+        } else {
+            "当前版本 v$currentVersion · 检查更新"
+        },
+        onClick = {
+            val f = downloadedFile
+            when {
+                f != null -> UpdateManager.installApk(context, f)
+                !checking && !downloading -> check()
+            }
+        }
+    )
+
+    val info = pending
+    if (info != null || downloading) {
+        AlertDialog(
+            onDismissRequest = { if (!downloading) pending = null },
+            title = {
+                Text(
+                    if (downloading) "正在下载更新"
+                    else "发现新版本 v${info?.version.orEmpty()}"
+                )
+            },
+            text = {
+                Column {
+                    if (downloading) {
+                        Text("已完成 ${(progress * 100).toInt()}%")
+                        Spacer(Modifier.height(10.dp))
+                        LinearProgressIndicator(
+                            progress = { progress.coerceIn(0f, 1f) },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    } else {
+                        Text("当前版本 v$currentVersion")
+                        info?.sizeBytes?.takeIf { it > 0 }?.let { size ->
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                text = "安装包约 %.1f MB".format(size / 1048576.0),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        info?.notes?.takeIf { it.isNotBlank() }?.let { notes ->
+                            Spacer(Modifier.height(10.dp))
+                            Text(
+                                text = notes,
+                                style = MaterialTheme.typography.bodySmall,
+                                maxLines = 8
+                            )
+                        }
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            text = "下载完成后自动拉起系统安装。检查更新只读取 GitHub 公开信息，不上传任何数据。",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                if (!downloading) {
+                    TextButton(onClick = { info?.let { download(it) } }) { Text("下载并安装") }
+                }
+            },
+            dismissButton = {
+                if (!downloading) {
+                    TextButton(onClick = { pending = null }) { Text("以后再说") }
+                }
+            }
+        )
     }
 }
 
