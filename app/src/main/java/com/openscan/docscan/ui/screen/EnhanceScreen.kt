@@ -47,8 +47,13 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -200,27 +205,60 @@ fun EnhanceScreen(
                         .navigationBarsPadding()
                         .padding(vertical = 10.dp)
                 ) {
-                    // 效果选择条
-                    Row(
+                    // 效果选择条：5 个选项一行放不下，保留横向滑动；
+                    // 但被截断的一侧自动渐隐，明示"右边/左边还有"。
+                    val effectScroll = rememberScrollState()
+                    Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState())
-                            .padding(horizontal = 14.dp),
-                        horizontalArrangement = Arrangement.spacedBy(9.dp)
+                            // DstIn 混合需要离屏合成，否则渐变会把整层画花
+                            .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+                            .drawWithContent {
+                                drawContent()
+                                val fadePx = 16.dp.toPx()
+                                // 滑到最左后左侧渐隐消失，反之亦然（draw 阶段读
+                                // ScrollState 会自动触发重绘）
+                                if (effectScroll.value > 0) {
+                                    drawRect(
+                                        brush = Brush.horizontalGradient(
+                                            0f to Color.Transparent, 1f to Color.Black,
+                                            endX = fadePx
+                                        ),
+                                        blendMode = BlendMode.DstIn
+                                    )
+                                }
+                                if (effectScroll.value < effectScroll.maxValue) {
+                                    drawRect(
+                                        brush = Brush.horizontalGradient(
+                                            0f to Color.Black, 1f to Color.Transparent,
+                                            startX = size.width - fadePx
+                                        ),
+                                        blendMode = BlendMode.DstIn
+                                    )
+                                }
+                            }
                     ) {
-                        EFFECT_OPTIONS.forEach { option ->
-                            EffectChip(
-                                label = option.label,
-                                selected = option == selected,
-                                enabled = !processing && !saving,
-                                onClick = { selected = option }
-                            )
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp)
+                                .horizontalScroll(effectScroll),
+                            horizontalArrangement = Arrangement.spacedBy(7.dp)
+                        ) {
+                            EFFECT_OPTIONS.forEach { option ->
+                                EffectChip(
+                                    label = option.label,
+                                    selected = option == selected,
+                                    enabled = !processing && !saving,
+                                    onClick = { selected = option }
+                                )
+                            }
                         }
                     }
 
-                    Spacer(Modifier.height(10.dp))
+                    Spacer(Modifier.height(12.dp))
 
-                    // 分辨率选择条：与效果正交，可任意组合（如"黑白 + 极清"）
+                    // 分辨率选择条：4 个档位均分宽度，任何屏幕都完整可见，无需滚动
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -234,10 +272,8 @@ fun EnhanceScreen(
                         )
                         Spacer(Modifier.width(10.dp))
                         Row(
-                            modifier = Modifier
-                                .weight(1f)
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            modifier = Modifier.weight(1f),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             ScanPipeline.Resolution.all.forEach { r ->
                                 ResolutionChip(
@@ -245,7 +281,8 @@ fun EnhanceScreen(
                                     hint = r.hint,
                                     selected = r == resolution,
                                     enabled = !processing && !saving,
-                                    onClick = { resolution = r }
+                                    onClick = { resolution = r },
+                                    modifier = Modifier.weight(1f)
                                 )
                             }
                         }
@@ -447,12 +484,13 @@ private fun EffectChip(
             )
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
                 text = label,
                 style = MaterialTheme.typography.labelLarge,
+                maxLines = 1,
                 fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
                 color = if (selected) {
                     MaterialTheme.colorScheme.onPrimary
@@ -476,7 +514,8 @@ private fun ResolutionChip(
     hint: String,
     selected: Boolean,
     enabled: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     Surface(
         color = if (selected) {
@@ -485,7 +524,7 @@ private fun ResolutionChip(
             MaterialTheme.colorScheme.surfaceVariant
         },
         shape = RoundedCornerShape(11.dp),
-        modifier = Modifier
+        modifier = modifier
             .clickable(enabled = enabled) { onClick() }
             .then(
                 if (selected) Modifier else Modifier.border(
@@ -496,13 +535,14 @@ private fun ResolutionChip(
             )
     ) {
         Column(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(
                 text = label,
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                maxLines = 1,
                 color = if (selected) {
                     MaterialTheme.colorScheme.onSecondaryContainer
                 } else {
@@ -512,6 +552,7 @@ private fun ResolutionChip(
             Text(
                 text = hint,
                 style = MaterialTheme.typography.labelSmall,
+                maxLines = 1,
                 color = if (selected) {
                     MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.8f)
                 } else {

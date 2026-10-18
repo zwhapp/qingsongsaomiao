@@ -74,7 +74,7 @@ class ScanPipeline(private val context: Context) {
         ULTRA("超清", 4000, "细节好"),
 
         /** 6000px：AI 超分放大，最清晰、最慢。 */
-        MAX("极清", 6000, "最清晰·较慢");
+        MAX("极清", 6000, "最清晰");
 
         companion object {
             val DEFAULT = ULTRA
