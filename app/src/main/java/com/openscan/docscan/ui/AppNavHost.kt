@@ -133,10 +133,15 @@ fun AppNavHost(
             EnhanceScreen(
                 onBack = { navController.popBackStack() },
                 onAdded = {
-                    // 一页处理完毕 → 去页面管理。把 REVIEW/ENHANCE 弹出，
-                    // 这样从 PAGES 点"继续拍"回到 CAMERA 时不会留下中间态。
+                    // 一页处理完毕 → 去页面管理。把扫描中间页全部弹出，
+                    // 栈收敛为 HOME→PAGES。
+                    // ★ 必须用 HOME 收口而不是 CAMERA：导入流程（HOME→REVIEW→
+                    //   ENHANCE）栈里根本没有 CAMERA，popUpTo(CAMERA) 找不到
+                    //   目标就什么都不弹，REVIEW/ENHANCE 留在栈里——之后从
+                    //   PAGES 一路按返回会退回这两页，而 reviewSource 已被
+                    //   回收，看到的就是"黑屏的调整边缘页"（真机案例）。
                     navController.navigate(Routes.PAGES) {
-                        popUpTo(Routes.CAMERA) { inclusive = false }
+                        popUpTo(Routes.HOME) { inclusive = false }
                     }
                 }
             )
@@ -146,9 +151,13 @@ fun AppNavHost(
             PageManagerScreen(
                 onBack = { navController.popBackStack() },
                 onAddMore = {
-                    // 回到相机继续拍。清掉 PAGES 之上的所有临时页，
-                    // 保证从头拍完再回到 PAGES 时状态干净。
-                    navController.popBackStack(Routes.CAMERA, inclusive = false)
+                    // 回到相机继续拍。拍照流程直接弹回栈里的 CAMERA；
+                    // 导入流程栈里没有 CAMERA（HOME→PAGES），navigate 补一个。
+                    // 这样无论哪条路径进来，"继续拍→拍完→加入"之后栈都收敛
+                    // 为 HOME→PAGES，不会堆积旧页面。
+                    if (!navController.popBackStack(Routes.CAMERA, inclusive = false)) {
+                        navController.navigate(Routes.CAMERA)
+                    }
                 },
                 onSaved = { docId ->
                     if (docId < 0) {

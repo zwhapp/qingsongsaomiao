@@ -201,6 +201,24 @@ class ScanPipeline(private val context: Context) {
             }
         }
 
+        // 1.7) 裁掉四周纸外暗带：quad 比实际纸张略大（文本种子框偏大、ML 分割
+        //      边缘松）时纸外桌面进入输出，二值化后成为黑斑黑块；端正/转正的
+        //      黑角（已改填白）同理。必须在增强**之前**裁——彩色图上纸面亮、
+        //      桌面暗最可分，二值化后两者同为黑色就无从区分了（真机对比 WPS
+        //      黑白输出观感差距的主要来源）。
+        if (options.enhance != ScanEnhancer.Mode.ORIGINAL) {
+            runCatching {
+                val trimmed = DocumentGeometry.trimDarkEdges(current)
+                if (trimmed !== current) {
+                    // current 可能就是调用方的 source（未做矫正时），不能代回收
+                    if (current !== source) current.recycle()
+                    current = trimmed
+                }
+            }.getOrElse { e ->
+                Log.w(TAG, "边缘裁剪失败，保留原框", e)
+            }
+        }
+
         // 2) 增强（去阴影 / 二值化 / 灰度）
         // 2.0) 黑白模式：先放大到目标长边，再进二值化（v1.5.11 关键修复）。
         //      二值化是阈值判决 —— 在低分辨率上做，笔画只有 2~3px，Sauvola 窗口

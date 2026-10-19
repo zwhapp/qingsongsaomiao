@@ -107,6 +107,81 @@ fun main(args: Array<String>) {
         println(String.format("  %s %-20s 判定 %d°  (期望 %d°)", mark, c.label, r, c.expect))
     }
 
+    println("== trimDarkEdgesRect 合成回归（纸外暗带裁剪：该裁的裁、亮纸不裁、浅阴影不误裁）==")
+    // 案例1：亮纸 220 + 四周各 40px 深色桌面(40)——每边至少内缩一个 band
+    // 案例2：均匀亮纸——不裁（null）
+    // 案例3：纸面边缘浅阴影（190 vs 纸心 220）——不到桌面判据，不误裁
+    // 案例4：真实扫描图 text_photo_full——断言几乎不裁（已有输出不含暗边）
+    run {
+        val W = 800; val H = 1100
+        fun makeEdge(ink: Double, edge: Double): Mat {
+            val m = Mat(H, W, org.opencv.core.CvType.CV_8UC1)
+            m.setTo(org.opencv.core.Scalar.all(ink))
+            val inner = Mat(m, org.opencv.core.Rect(40, 40, W - 80, H - 80))
+            inner.setTo(org.opencv.core.Scalar.all(edge))
+            inner.release()
+            return m
+        }
+        fun relRect(r: IntArray?, W: Int, H: Int): String =
+            if (r == null) "null" else "x0=${r[0]} y0=${r[1]} x1=${r[2]} y1=${r[3]}"
+
+        // 案例1：四边暗带。band = min(800,1100)/50 = 22px；暗带 40px 足够触发 1 段内缩
+        val c1 = makeEdge(40.0, 220.0)
+        val r1 = try { InkSkew.trimDarkEdgesRect(c1) } catch (e: Throwable) {
+            println("  ✗ 暗带案例: EXCEPTION ${e.javaClass.simpleName}"); fail++; null
+        }
+        c1.release()
+        val ok1 = r1 != null && r1[0] >= 22 && r1[1] >= 22 && r1[2] <= W - 22 && r1[3] <= H - 22
+        if (!ok1) fail++
+        println("  ${if (ok1) "✓" else "✗"} 暗带案例(四边40px深40)   ${relRect(r1, W, H)}")
+        if (r1 != null && r1[0] == 0 && r1[1] == 0 && r1[2] == W && r1[3] == H) fail++
+
+        // 案例2：均匀亮纸 → null
+        val c2 = makeEdge(220.0, 220.0)
+        val r2 = try { InkSkew.trimDarkEdgesRect(c2) } catch (e: Throwable) {
+            println("  ✗ 均匀亮纸: EXCEPTION ${e.javaClass.simpleName}"); fail++; null
+        }
+        c2.release()
+        val ok2 = r2 == null
+        if (!ok2) fail++
+        println("  ${if (ok2) "✓" else "✗"} 均匀亮纸(不应裁)          ${relRect(r2, W, H)}")
+
+        // 案例3：边缘浅阴影 190（比纸心暗 30，不到 TRIM_REL_DIFF=45）→ 不裁
+        val c3 = Mat(H, W, org.opencv.core.CvType.CV_8UC1)
+        c3.setTo(org.opencv.core.Scalar.all(190.0))
+        run {
+            val inner = Mat(c3, org.opencv.core.Rect(60, 60, W - 120, H - 120))
+            inner.setTo(org.opencv.core.Scalar.all(220.0))
+            inner.release()
+        }
+        val r3 = try { InkSkew.trimDarkEdgesRect(c3) } catch (e: Throwable) {
+            println("  ✗ 浅阴影: EXCEPTION ${e.javaClass.simpleName}"); fail++; null
+        }
+        c3.release()
+        // 边缘均值 190 < 105? 否 → 不裁。允许返回 null
+        val ok3 = r3 == null
+        if (!ok3) fail++
+        println("  ${if (ok3) "✓" else "✗"} 浅阴影190(不应裁)          ${relRect(r3, W, H)}")
+
+        // 案例4：真实扫描图——允许裁掉真实存在的暗边（text_photo 右侧实测
+        // 有 5% 左右背景带），但每边裁剪量必须 ≤ 上限 6%，验证保护逻辑生效
+        val f4 = File(proj, "tools/text_photo_full.jpg")
+        if (!f4.exists()) { println("  MISSING text_photo_full.jpg"); fail++ } else {
+            val g4 = loadGray(f4.absolutePath)
+            val gw = g4.cols(); val gh = g4.rows()
+            val r4 = try { InkSkew.trimDarkEdgesRect(g4) } catch (e: Throwable) {
+                println("  ✗ 真实图: EXCEPTION ${e.javaClass.simpleName}"); fail++; null
+            }
+            g4.release()
+            val capW = gw * 6 / 100; val capH = gh * 6 / 100
+            val ok4 = r4 == null ||
+                (r4[0] in 0..capW && r4[1] in 0..capH &&
+                    (gw - r4[2]) in 0..capW && (gh - r4[3]) in 0..capH)
+            if (!ok4) fail++
+            println("  ${if (ok4) "✓" else "✗"} 真实图text_photo(受6%上限保护) ${relRect(r4, gw, gh)}")
+        }
+    }
+
     println("== 二级平坦化冒烟（P85 自适应基准，彩色全链路真实执行）==")
     // 期望：执行无异常 + 纸面 P85 落在 [225, 255]（纯平坦不强制提白，
     // 白化由 liftPaperWhite 收口；正常曝光页纸面 P85 应在 240 上下）。

@@ -60,6 +60,12 @@ def extract_const(src, name):
 # (源文件, 校验项列表)；函数按花括号平衡提取，常量按行提取
 SPECS = [
     (APP_KT, [
+        ("fn", "trimDarkEdgesRect"),
+        ("const", "TRIM_ABS_MAX"),
+        ("const", "TRIM_REL_DIFF"),
+        ("const", "TRIM_BAND_DIV"),
+        ("const", "TRIM_MAX_INSET_NUM"),
+        ("const", "TRIM_KEEP_NUM"),
         ("fn", "estimateSkewFromGray"),
         ("fn", "textInkMask"),
         ("fn", "estimateOrientationFromGray"),

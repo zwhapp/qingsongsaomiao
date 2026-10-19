@@ -3,6 +3,7 @@ package inkcheck
 import org.opencv.core.Core
 import org.opencv.core.Mat
 import org.opencv.core.Point
+import org.opencv.core.Rect
 import org.opencv.core.Scalar
 import org.opencv.core.Size
 import org.opencv.imgproc.Imgproc
@@ -1002,6 +1003,74 @@ object InkSkew {
 
     /** 90° 方向判定阈值：score90 / score0 超过它才转正。 */
     private const val ORI_TURN_RATIO = 1.3
+
+    // ---- trimDarkEdgesRect 阈值（与 jvmcheck 同步）----
+    /** 暗带绝对上限：灰度均值低于它才可能是桌面（纸面边缘阴影通常亮于此）。 */
+    private const val TRIM_ABS_MAX = 105.0
+    /** 暗带相对判据：比纸心均值暗至少这么多。 */
+    private const val TRIM_REL_DIFF = 45.0
+    /** 扫描带宽 = 短边的 1/TRIM_BAND_DIV（约 2%）。 */
+    private const val TRIM_BAND_DIV = 50
+    /** 每边最大内缩比例（%）。 */
+    private const val TRIM_MAX_INSET_NUM = 6
+    /** 裁剪后剩余边长低于原长的该百分比（%）即放弃裁剪。 */
+    private const val TRIM_KEEP_NUM = 60
+
+    /**
+     * [trimDarkEdges] 的 Mat 域核心：在灰度图上计算四周暗带的裁剪矩形。
+     *
+     * @return `[x0, y0, x1, y1]`（裁剪后区域，右/下开区间）；无需裁剪时返回 null。
+     * 该函数与 jvmcheck/InkSkewCore.kt 同名函数**逐字一致**（sync_skew.py 校验），
+     * 桌面 JVM 冒烟用例在 Main.kt「trimDarkEdgesRect 合成回归」一节。
+     */
+    fun trimDarkEdgesRect(gray: Mat): IntArray? {
+        val w = gray.cols()
+        val h = gray.rows()
+        if (w < 40 || h < 40) return null
+        val band = maxOf(4, minOf(w, h) / TRIM_BAND_DIV)
+        val maxInset = minOf(w, h) * TRIM_MAX_INSET_NUM / 100
+        val segs = maxInset / band
+        if (segs <= 0) return null
+
+        // 纸面参考亮度：中央 50%×50% 区域均值
+        val center = Mat(gray, Rect(w / 4, h / 4, w / 2, h / 2))
+        val cMean = Core.mean(center).`val`[0]
+        center.release()
+
+        var x0 = 0; var y0 = 0; var x1 = w; var y1 = h
+        // top：从当前上边缘向下逐带扫描
+        while (y0 + band <= maxInset) {
+            val r = Mat(gray, Rect(0, y0, w, band))
+            val m = Core.mean(r).`val`[0]
+            r.release()
+            if (m < TRIM_ABS_MAX && m < cMean - TRIM_REL_DIFF) y0 += band else break
+        }
+        // bottom
+        while (h - y1 + band <= maxInset) {
+            val r = Mat(gray, Rect(0, y1 - band, w, band))
+            val m = Core.mean(r).`val`[0]
+            r.release()
+            if (m < TRIM_ABS_MAX && m < cMean - TRIM_REL_DIFF) y1 -= band else break
+        }
+        // left / right：行范围用已裁剪的 y0..y1，避免已被裁掉的暗区拉低均值
+        while (x0 + band <= maxInset) {
+            val r = Mat(gray, Rect(x0, y0, band, y1 - y0))
+            val m = Core.mean(r).`val`[0]
+            r.release()
+            if (m < TRIM_ABS_MAX && m < cMean - TRIM_REL_DIFF) x0 += band else break
+        }
+        while (w - x1 + band <= maxInset) {
+            val r = Mat(gray, Rect(x1 - band, y0, band, y1 - y0))
+            val m = Core.mean(r).`val`[0]
+            r.release()
+            if (m < TRIM_ABS_MAX && m < cMean - TRIM_REL_DIFF) x1 -= band else break
+        }
+
+        if (x0 == 0 && y0 == 0 && x1 == w && y1 == h) return null
+        // 剩余面积过小说明判据失真（几乎全是暗区），宁可保留也不裁
+        if (x1 - x0 < w * TRIM_KEEP_NUM / 100 || y1 - y0 < h * TRIM_KEEP_NUM / 100) return null
+        return intArrayOf(x0, y0, x1, y1)
+    }
 
     /**
      * 冒烟专用：模拟 ScanEnhancer.enhance 的真实前置链 ——

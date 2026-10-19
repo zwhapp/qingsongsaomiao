@@ -133,10 +133,23 @@ fun ReviewScreen(
                 errorText = "无法读取拍摄结果"
             }
         } else if (sourceBitmap == null && sourceUri == null) {
-            // 没有拍到也没有选到，直接拉起相册
-            pickLauncher.launch(
-                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-            )
+            // 从增强页按返回退回的场景：图在 reviewSource 里（点"下一步"时
+            // 交接出去的），把所有权拿回来重新显示，否则本页是黑屏——
+            // 局部 remember 状态在页面离开时已丢失，唯一持有图的就是 reviewSource。
+            val handedBack = reviewSource
+            if (handedBack != null) {
+                sourceBitmap = handedBack
+                quad = reviewQuad ?: DocumentGeometry.Quad.full(
+                    handedBack.width, handedBack.height, 0.02
+                )
+                reviewSource = null
+                reviewQuad = null
+            } else {
+                // 没有拍到也没有选到，直接拉起相册
+                pickLauncher.launch(
+                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                )
+            }
         }
     }
 

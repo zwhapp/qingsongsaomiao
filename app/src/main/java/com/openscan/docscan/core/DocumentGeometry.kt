@@ -9,6 +9,7 @@ import org.opencv.core.Mat
 import org.opencv.core.MatOfPoint
 import org.opencv.core.MatOfPoint2f
 import org.opencv.core.Point
+import org.opencv.core.Rect
 import org.opencv.core.Scalar
 import org.opencv.core.Size
 import org.opencv.imgproc.Imgproc
@@ -618,7 +619,44 @@ object DocumentGeometry {
     fun rotateToLevel(src: Bitmap, angleDeg: Double): Bitmap {
         if (abs(angleDeg) < 0.05) return src
         val matrix = Matrix().apply { postRotate(-angleDeg.toFloat()) }
-        return Bitmap.createBitmap(src, 0, 0, src.width, src.height, matrix, true)
+        // 旋转出界的四角必须填白。此前用 Bitmap.createBitmap(..., matrix)，
+        // 出界区是透明像素，转 BGR 后就是黑色——端正旋转在纸面四角留下
+        // 黑色楔形块，黑白二值化后原样保留（真机对比 WPS 输出观感差距的
+        // 来源之一）。白角在 Sauvola 判决下就是纸面，自然消隐。
+        val out = Bitmap.createBitmap(src.width, src.height, Bitmap.Config.ARGB_8888)
+        val canvas = android.graphics.Canvas(out)
+        canvas.drawColor(android.graphics.Color.WHITE)
+        canvas.drawBitmap(src, matrix, null)
+        return out
+    }
+
+    /**
+     * 裁掉矫正输出四周的"纸外暗带"，返回裁剪后的位图（无需裁剪时原样返回）。
+     *
+     * 问题来源：quad 比实际纸张略大（文本种子框偏大、ML 分割边缘松）时，
+     * 纸外桌面进入矫正输出；加上端正/转正旋转的黑角（已改填白）。这些暗区
+     * 在黑白二值化后变成黑斑、黑块、脏边——对比 WPS 的输出（只含纸面、
+     * 背景纯白），观感差距主要在这。必须在**增强之前**裁：此时是彩色图，
+     * 纸面亮、桌面暗，最可分；一旦二值化，桌面和墨迹都是黑的，无从区分。
+     *
+     * 算法（Mat 域核心在 [trimDarkEdgesRect]，jvmcheck 与桌面 OpenCV 同步验证）：
+     * 对每一边从外向内按 2% 带宽扫描行/列平均亮度，显著暗于纸心（差 ≥45
+     * 且绝对值 <105，桌面特征）才内缩；每边最多内缩 6%，总剩余 <60% 放弃。
+     * 阈值刻意保守——误裁纸面内容比留一圈黑边糟糕得多。
+     */
+    fun trimDarkEdges(src: Bitmap): Bitmap {
+        val m = Mat()
+        val g = Mat()
+        try {
+            Utils.bitmapToMat(src, m)
+            Imgproc.cvtColor(m, g, Imgproc.COLOR_RGBA2GRAY)
+            val r = trimDarkEdgesRect(g) ?: return src
+            return Bitmap.createBitmap(
+                src, r[0], r[1], r[2] - r[0], r[3] - r[1]
+            )
+        } finally {
+            m.release(); g.release()
+        }
     }
 
     // ---- 内部工具 ----
@@ -691,7 +729,75 @@ object DocumentGeometry {
         }
     }
 
+    /**
+     * [trimDarkEdges] 的 Mat 域核心：在灰度图上计算四周暗带的裁剪矩形。
+     *
+     * @return `[x0, y0, x1, y1]`（裁剪后区域，右/下开区间）；无需裁剪时返回 null。
+     * 该函数与 jvmcheck/InkSkewCore.kt 同名函数**逐字一致**（sync_skew.py 校验），
+     * 桌面 JVM 冒烟用例在 Main.kt「trimDarkEdgesRect 合成回归」一节。
+     */
+    fun trimDarkEdgesRect(gray: Mat): IntArray? {
+        val w = gray.cols()
+        val h = gray.rows()
+        if (w < 40 || h < 40) return null
+        val band = maxOf(4, minOf(w, h) / TRIM_BAND_DIV)
+        val maxInset = minOf(w, h) * TRIM_MAX_INSET_NUM / 100
+        val segs = maxInset / band
+        if (segs <= 0) return null
+
+        // 纸面参考亮度：中央 50%×50% 区域均值
+        val center = Mat(gray, Rect(w / 4, h / 4, w / 2, h / 2))
+        val cMean = Core.mean(center).`val`[0]
+        center.release()
+
+        var x0 = 0; var y0 = 0; var x1 = w; var y1 = h
+        // top：从当前上边缘向下逐带扫描
+        while (y0 + band <= maxInset) {
+            val r = Mat(gray, Rect(0, y0, w, band))
+            val m = Core.mean(r).`val`[0]
+            r.release()
+            if (m < TRIM_ABS_MAX && m < cMean - TRIM_REL_DIFF) y0 += band else break
+        }
+        // bottom
+        while (h - y1 + band <= maxInset) {
+            val r = Mat(gray, Rect(0, y1 - band, w, band))
+            val m = Core.mean(r).`val`[0]
+            r.release()
+            if (m < TRIM_ABS_MAX && m < cMean - TRIM_REL_DIFF) y1 -= band else break
+        }
+        // left / right：行范围用已裁剪的 y0..y1，避免已被裁掉的暗区拉低均值
+        while (x0 + band <= maxInset) {
+            val r = Mat(gray, Rect(x0, y0, band, y1 - y0))
+            val m = Core.mean(r).`val`[0]
+            r.release()
+            if (m < TRIM_ABS_MAX && m < cMean - TRIM_REL_DIFF) x0 += band else break
+        }
+        while (w - x1 + band <= maxInset) {
+            val r = Mat(gray, Rect(x1 - band, y0, band, y1 - y0))
+            val m = Core.mean(r).`val`[0]
+            r.release()
+            if (m < TRIM_ABS_MAX && m < cMean - TRIM_REL_DIFF) x1 -= band else break
+        }
+
+        if (x0 == 0 && y0 == 0 && x1 == w && y1 == h) return null
+        // 剩余面积过小说明判据失真（几乎全是暗区），宁可保留也不裁
+        if (x1 - x0 < w * TRIM_KEEP_NUM / 100 || y1 - y0 < h * TRIM_KEEP_NUM / 100) return null
+        return intArrayOf(x0, y0, x1, y1)
+    }
+
     private const val APPROX_EPSILON = 0.02
+
+    // ---- trimDarkEdgesRect 阈值（与 jvmcheck 同步）----
+    /** 暗带绝对上限：灰度均值低于它才可能是桌面（纸面边缘阴影通常亮于此）。 */
+    private const val TRIM_ABS_MAX = 105.0
+    /** 暗带相对判据：比纸心均值暗至少这么多。 */
+    private const val TRIM_REL_DIFF = 45.0
+    /** 扫描带宽 = 短边的 1/TRIM_BAND_DIV（约 2%）。 */
+    private const val TRIM_BAND_DIV = 50
+    /** 每边最大内缩比例（%）。 */
+    private const val TRIM_MAX_INSET_NUM = 6
+    /** 裁剪后剩余边长低于原长的该百分比（%）即放弃裁剪。 */
+    private const val TRIM_KEEP_NUM = 60
     private const val MIN_AREA_RATIO = 0.12
     private const val DETECT_MAX_EDGE = 1080
 
