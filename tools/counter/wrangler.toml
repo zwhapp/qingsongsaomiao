@@ -1,0 +1,10 @@
+name = "qingsong-dl-counter"
+main = "worker.js"
+compatibility_date = "2024-09-23"
+
+# KV 持久化计数。首次部署前先执行：
+#   wrangler kv namespace create COUNTER
+# 把命令输出的 id（形如 3a4b5c...）填到下面的 id 字段。
+[[kv_namespaces]]
+binding = "COUNTER"
+id = "REPLACE_WITH_YOUR_KV_ID"
