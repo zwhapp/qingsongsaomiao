@@ -8,6 +8,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -28,6 +29,19 @@ object UpdateManager {
     private const val LATEST_API = "https://api.github.com/repos/$REPO/releases/latest"
     private const val CONNECT_TIMEOUT_MS = 8_000
     private const val READ_TIMEOUT_MS = 15_000
+
+    /**
+     * 下载镜像（按优先级依次尝试，最后直连兜底）。
+     * 国内直连 github.com 的 release 附件（objects.githubusercontent.com）经常超时或被墙，
+     * 这些公共代理把原始下载链接整段拼在自己的域名后面，能显著提速。
+     * 顺序可按实测速度调整；任意一个失效会自动跳到下一个，全部失败才报错。
+     */
+    private val DOWNLOAD_PROXIES = listOf(
+        "https://ghproxy.net/",
+        "https://mirror.ghproxy.com/",
+        "https://ghproxy.com/",
+        "https://github.moeyy.xyz/"
+    )
 
     /** 检查更新拿到的信息。 */
     data class UpdateInfo(
@@ -96,17 +110,48 @@ object UpdateManager {
         }
     }
 
-    /** 流式下载 APK 到 cache/update/，onProgress 回调 0..1。返回下载文件。 */
+    /**
+     * 流式下载 APK 到 cache/update/，onProgress 回调 0..1。
+     * 依次尝试各下载镜像、最后直连兜底：任一个成功即返回，全部失败抛错。
+     * onSource 在切换下载源时回调（用于 UI 提示正在用哪个镜像）。
+     */
     suspend fun downloadApk(
         context: Context,
         url: String,
-        onProgress: (Float) -> Unit
+        expectedSize: Long = 0L,
+        onProgress: (Float) -> Unit,
+        onSource: (String) -> Unit = {}
     ): File = withContext(Dispatchers.IO) {
         val dir = File(context.cacheDir, "update").apply { mkdirs() }
         val dest = File(dir, "update.apk")
-        val conn = open(url)
+        val candidates = DOWNLOAD_PROXIES.map { it + url } + url
+        var lastErr: Throwable? = null
+        for (candidate in candidates) {
+            try {
+                onSource("正在通过 ${proxyLabel(candidate)} 下载…")
+                return@withContext downloadFrom(candidate, dest, expectedSize, onProgress)
+            } catch (e: Throwable) {
+                lastErr = e // 该镜像失败，尝试下一个
+            }
+        }
+        throw IOException(
+            "所有下载源（含 ${DOWNLOAD_PROXIES.size} 个镜像与直连）均失败：" +
+                (lastErr?.message ?: "未知错误")
+        )
+    }
+
+    /** 单次从给定地址下载；非 200、空文件或大小明显不符（下到错误页）都会抛错触发换源。 */
+    private fun downloadFrom(
+        url: String,
+        dest: File,
+        expectedSize: Long,
+        onProgress: (Float) -> Unit
+    ): File {
+        val conn = openDownload(url)
         try {
-            val total = conn.contentLengthLong.let { if (it > 0) it else -1L }
+            val code = conn.responseCode
+            if (code != 200) throw IOException("HTTP $code")
+            val total = if (conn.contentLengthLong > 0) conn.contentLengthLong else expectedSize
             conn.inputStream.use { input ->
                 dest.outputStream().use { out ->
                     val buf = ByteArray(64 * 1024)
@@ -120,10 +165,35 @@ object UpdateManager {
                     }
                 }
             }
+            // 大小明显对不上说明下到了错误页（如镜像返回 HTML 报错而非 APK）
+            val got = dest.length()
+            if (got <= 0) throw IOException("下载到空文件")
+            if (expectedSize > 0 && kotlin.math.abs(got - expectedSize) > expectedSize * 0.02) {
+                dest.delete()
+                throw IOException("文件大小不符（期望 $expectedSize，实际 $got）")
+            }
+            return dest
         } finally {
             conn.disconnect()
         }
-        dest
+    }
+
+    /** 下载用连接：比 API 用更长的读超时，避免 70MB 大文件在慢镜像上被中间超时截断。 */
+    private fun openDownload(url: String): HttpURLConnection {
+        val conn = URL(url).openConnection() as HttpURLConnection
+        conn.connectTimeout = CONNECT_TIMEOUT_MS
+        conn.readTimeout = 120_000
+        conn.instanceFollowRedirects = true
+        conn.setRequestProperty("User-Agent", "QingSongScan-UpdateCheck")
+        return conn
+    }
+
+    /** 把候选地址还原成可读的源名，用于 UI 提示。 */
+    private fun proxyLabel(u: String): String {
+        for (p in DOWNLOAD_PROXIES) {
+            if (u.startsWith(p)) return p.removeSuffix("/")
+        }
+        return "GitHub 直连"
     }
 
     /**

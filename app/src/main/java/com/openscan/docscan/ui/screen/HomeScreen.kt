@@ -262,6 +262,8 @@ private fun UpdateEntry(currentVersion: String) {
     var pending by remember { mutableStateOf<UpdateManager.UpdateInfo?>(null) }
     var downloading by remember { mutableStateOf(false) }
     var progress by remember { mutableFloatStateOf(0f) }
+    // 当前正在使用的下载源（镜像域名或"GitHub 直连"），切换源时更新
+    var source by remember { mutableStateOf<String?>(null) }
     // 上一次下载完成的包：安装授权被拒后回来，点入口直接重装，不用重新下载
     var downloadedFile by remember { mutableStateOf<File?>(null) }
 
@@ -288,9 +290,16 @@ private fun UpdateEntry(currentVersion: String) {
     fun download(info: UpdateManager.UpdateInfo) {
         downloading = true
         progress = 0f
+        source = null
         scope.launch {
             runCatching {
-                UpdateManager.downloadApk(context, info.apkUrl) { p -> progress = p }
+                UpdateManager.downloadApk(
+                    context,
+                    info.apkUrl,
+                    info.sizeBytes,
+                    onProgress = { p -> progress = p },
+                    onSource = { s -> source = s }
+                )
             }.onSuccess { f ->
                 downloading = false
                 pending = null
@@ -343,6 +352,14 @@ private fun UpdateEntry(currentVersion: String) {
                 Column {
                     if (downloading) {
                         Text("已完成 ${(progress * 100).toInt()}%")
+                        Spacer(Modifier.height(6.dp))
+                        source?.let {
+                            Text(
+                                text = it,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                         Spacer(Modifier.height(10.dp))
                         LinearProgressIndicator(
                             progress = { progress.coerceIn(0f, 1f) },

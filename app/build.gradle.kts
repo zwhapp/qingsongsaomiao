@@ -43,8 +43,8 @@ android {
         applicationId = "com.openscan.docscan"
         minSdk = 26
         targetSdk = 35
-        versionCode = 50
-        versionName = "1.5.20-selfuse"
+        versionCode = 51
+        versionName = "1.5.21-selfuse"
 
         vectorDrawables { useSupportLibrary = true }
 
