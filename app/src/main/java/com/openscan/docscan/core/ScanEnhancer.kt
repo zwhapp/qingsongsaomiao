@@ -1048,8 +1048,12 @@ object ScanEnhancer {
     /** 提白/白平衡的最大增益。超过这个值会把纸面噪点放大成麻点。 */
     private const val LIFT_MAX_GAIN = 1.25
 
-    /** 供 UI 展示的模式列表。 */
+    /**
+     * 供 UI 展示的模式列表。
+     *
+     * ★ v1.5.20：黑白提前到第一个——默认效果，扫描文档最常用。
+     */
     fun availableModes(): List<Mode> = listOf(
-        Mode.ORIGINAL, Mode.DE_SHADOW, Mode.BLACK_WHITE, Mode.GRAYSCALE, Mode.REMOVE_INK
+        Mode.BLACK_WHITE, Mode.DE_SHADOW, Mode.REMOVE_INK, Mode.GRAYSCALE, Mode.ORIGINAL
     )
 }

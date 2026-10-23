@@ -1,8 +1,10 @@
 package com.openscan.docscan.ui.screen
 
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -34,6 +36,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -46,6 +49,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -60,20 +64,24 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.openscan.docscan.DocScanApplication
 import com.openscan.docscan.core.ScanEnhancer
-import com.openscan.docscan.data.DocumentEntity
+import com.openscan.docscan.core.ScanPipeline
 import com.openscan.docscan.data.DocumentStore
+import com.openscan.docscan.data.DocumentEntity
 import com.openscan.docscan.data.PageEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
 /**
- * 多页管理页：确认、排序、删除页面，最后一键保存成一份多页文档。
+ * 页面管理页：连拍队列确认 + 批量识别 + 排序删除 + 一键保存。
  *
- * 这是扫描流程的收口环节。用户在这里看到的页序就是最终 PDF 的页序。
+ * ★ v1.5.20 连拍统一识别：相机拍的原图先进「待处理队列」（只存文件、
+ *   零计算），本页点「开始识别」后才逐张跑完整管线（检测→矫正→增强）。
+ *   已处理页仍保留原有的排序/删除/保存能力。
  */
 @Composable
 fun PageManagerScreen(
@@ -85,31 +93,45 @@ fun PageManagerScreen(
     val scope = rememberCoroutineScope()
     val app = context.applicationContext as DocScanApplication
     val store = remember { DocumentStore(context) }
+    val pipeline = remember { ScanPipeline(context) }
 
     var saving by remember { mutableStateOf(false) }
+    var processing by remember { mutableStateOf(false) }
     var progress by remember { mutableStateOf(0f) }
     var stageText by remember { mutableStateOf("") }
     var message by remember { mutableStateOf<String?>(null) }
     var showDiscardDialog by remember { mutableStateOf(false) }
 
-    // 用会话里的列表驱动 UI，删除/排序后自动重组
+    // 处理模式：默认黑白（与增强页默认一致，v1.5.20 起默认黑白）
+    var mode by remember { mutableStateOf(ScanEnhancer.Mode.BLACK_WHITE) }
+
+    // 队列与已处理页都是会话里的可观察列表，增删后自动重组
+    val pending = ScanSession.pendingFiles
     val pages = ScanSession.pages
-    val effect = ScanEnhancer.Mode.DE_SHADOW
+
+    DisposableEffect(Unit) {
+        onDispose { runCatching { pipeline.release() } }
+    }
 
     Scaffold(
         contentWindowInsets = WindowInsets.systemBars,
         topBar = {
             TopAppBar(
-                title = { Text("已扫描 ${pages.size} 页") },
+                title = {
+                    Text(
+                        if (pending.isNotEmpty()) "${pending.size} 页待识别"
+                        else "已扫描 ${pages.size} 页"
+                    )
+                },
                 navigationIcon = {
-                    IconButton(onClick = onBack, enabled = !saving) {
+                    IconButton(onClick = onBack, enabled = !saving && !processing) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
                     }
                 },
                 actions = {
                     IconButton(
                         onClick = { showDiscardDialog = true },
-                        enabled = !saving
+                        enabled = !saving && !processing
                     ) {
                         Icon(Icons.Filled.Delete, contentDescription = "放弃本次扫描")
                     }
@@ -127,14 +149,14 @@ fun PageManagerScreen(
                         .navigationBarsPadding()
                         .padding(horizontal = 16.dp, vertical = 12.dp)
                 ) {
-                    if (saving) {
+                    if (saving || processing) {
                         LinearProgressIndicator(
                             progress = { progress.coerceIn(0f, 1f) },
                             modifier = Modifier.fillMaxWidth()
                         )
                         Spacer(Modifier.height(8.dp))
                         Text(
-                            text = stageText.ifBlank { "正在保存…" },
+                            text = stageText.ifBlank { if (processing) "正在识别…" else "正在保存…" },
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -143,7 +165,7 @@ fun PageManagerScreen(
 
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         OutlinedButton(
-                            enabled = !saving,
+                            enabled = !saving && !processing,
                             onClick = onAddMore,
                             shape = RoundedCornerShape(12.dp),
                             modifier = Modifier.weight(1f)
@@ -154,36 +176,77 @@ fun PageManagerScreen(
                         }
 
                         Button(
-                            enabled = !saving && pages.isNotEmpty(),
+                            enabled = !saving && !processing &&
+                                (pages.isNotEmpty() || pending.isNotEmpty()),
                             shape = RoundedCornerShape(12.dp),
                             modifier = Modifier.weight(1f),
                             onClick = {
-                                saving = true
-                                progress = 0f
-                                stageText = "正在保存…"
-                                scope.launch {
-                                    runCatching {
-                                        saveSession(
-                                            app = app,
-                                            store = store,
-                                            effectMode = effect.name,
-                                            onProgress = { p, s ->
-                                                progress = p
-                                                stageText = s
-                                            }
-                                        )
-                                    }.onSuccess { docId ->
-                                        saving = false
-                                        ScanSession.clear()
-                                        onSaved(docId)
-                                    }.onFailure { e ->
-                                        saving = false
-                                        message = "保存失败：${e.message}"
+                                // 有待处理队列时，这个按钮=批量识别；没有时=保存
+                                if (pending.isNotEmpty()) {
+                                    processing = true
+                                    progress = 0f
+                                    stageText = "准备识别…"
+                                    scope.launch {
+                                        val files = ScanSession.takeAllPending()
+                                        files.forEachIndexed { i, f ->
+                                            stageText = "正在识别第 ${i + 1}/${files.size} 页…"
+                                            progress = (i.toFloat() / files.size).coerceIn(0f, 0.99f)
+                                            val ok = runCatching {
+                                                withContext(Dispatchers.Default) {
+                                                    val bmp = pipeline.loadBitmap(f)
+                                                    val result = pipeline.process(
+                                                        source = bmp,
+                                                        options = ScanPipeline.Options(
+                                                            quad = null,
+                                                            enhance = mode,
+                                                            targetLongEdge = ScanPipeline.Resolution.ULTRA.targetLongEdge
+                                                        )
+                                                    )
+                                                    // process 可能返回源图本身（未矫正且原图模式），
+                                                    // 只有不同对象时才代回收，避免毁掉会话里的位图
+                                                    if (result.bitmap !== bmp) bmp.recycle()
+                                                    ScanSession.addPage(
+                                                        result.bitmap,
+                                                        result.appliedQuad,
+                                                        ScanPipeline.Resolution.ULTRA.targetLongEdge
+                                                    )
+                                                }
+                                            }.isSuccess
+                                            if (ok) runCatching { f.delete() }
+                                            else ScanSession.enqueuePending(f) // 失败回队，重试或删除
+                                        }
+                                        processing = false
+                                        progress = 1f
+                                        stageText = ""
+                                    }
+                                } else {
+                                    saving = true
+                                    progress = 0f
+                                    stageText = "正在保存…"
+                                    scope.launch {
+                                        runCatching {
+                                            saveSession(
+                                                app = app,
+                                                store = store,
+                                                effectMode = mode.name,
+                                                onProgress = { p, s ->
+                                                    progress = p
+                                                    stageText = s
+                                                }
+                                            )
+                                        }.onSuccess { docId ->
+                                            saving = false
+                                            ScanSession.clear()
+                                            onSaved(docId)
+                                        }.onFailure { e ->
+                                            saving = false
+                                            message = "保存失败：${e.message}"
+                                        }
                                     }
                                 }
                             }
                         ) {
-                            if (saving) {
+                            if (saving || processing) {
                                 CircularProgressIndicator(
                                     modifier = Modifier.size(16.dp),
                                     strokeWidth = 2.dp,
@@ -194,7 +257,10 @@ fun PageManagerScreen(
                                 Icon(Icons.Filled.Check, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(Modifier.width(6.dp))
                             }
-                            Text("完成保存")
+                            Text(
+                                if (pending.isNotEmpty()) "开始识别（${pending.size}）"
+                                else "完成保存"
+                            )
                         }
                     }
                 }
@@ -208,19 +274,59 @@ fun PageManagerScreen(
             contentPadding = PaddingValues(14.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            itemsIndexed(pages, key = { index, _ -> index }) { index, draft ->
+            // ---- 待处理队列（连拍原图） ----
+            if (pending.isNotEmpty()) {
+                item {
+                    Column {
+                        Text(
+                            text = "待识别队列（拍完统一处理，节约时间）",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        // 处理模式选择（识别前可改）
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            listOf(
+                                ScanEnhancer.Mode.BLACK_WHITE to "黑白",
+                                ScanEnhancer.Mode.DE_SHADOW to "去阴影",
+                                ScanEnhancer.Mode.REMOVE_INK to "去手写",
+                                ScanEnhancer.Mode.GRAYSCALE to "灰度",
+                                ScanEnhancer.Mode.ORIGINAL to "原图",
+                            ).forEach { (m, label) ->
+                                FilterChip(
+                                    selected = mode == m,
+                                    onClick = { mode = m },
+                                    enabled = !processing && !saving,
+                                    label = { Text(label) }
+                                )
+                            }
+                        }
+                    }
+                }
+                itemsIndexed(pending, key = { i, f -> "p$i-${f.name}" }) { index, file ->
+                    PendingPageCard(
+                        file = file,
+                        index = index,
+                        enabled = !processing && !saving,
+                        onDelete = { ScanSession.removePendingAt(index) }
+                    )
+                }
+            }
+
+            // ---- 已处理页 ----
+            itemsIndexed(pages, key = { index, _ -> "d$index" }) { index, draft ->
                 PageDraftCard(
                     index = index,
                     bitmap = draft.bitmap,
                     total = pages.size,
-                    enabled = !saving,
+                    enabled = !saving && !processing,
                     onMoveUp = { ScanSession.move(index, index - 1) },
                     onMoveDown = { ScanSession.move(index, index + 1) },
                     onDelete = { ScanSession.removeAt(index) }
                 )
             }
 
-            if (pages.isEmpty()) {
+            if (pages.isEmpty() && pending.isEmpty()) {
                 item {
                     Box(
                         modifier = Modifier
@@ -251,7 +357,12 @@ fun PageManagerScreen(
         AlertDialog(
             onDismissRequest = { showDiscardDialog = false },
             title = { Text("放弃本次扫描") },
-            text = { Text("已扫描的 ${pages.size} 页将被丢弃，且不可恢复。") },
+            text = {
+                Text(
+                    "已拍摄的 ${pending.size} 页待处理 + ${pages.size} 页已处理" +
+                        "将被丢弃，且不可恢复。"
+                )
+            },
             confirmButton = {
                 TextButton(onClick = {
                     showDiscardDialog = false
@@ -272,8 +383,87 @@ fun PageManagerScreen(
             onDismissRequest = { message = null },
             title = { Text("提示") },
             text = { Text(msg) },
-            confirmButton = { TextButton(onClick = { message = null }) { Text("知道了") } }
+            confirmButton = { TextButton(onClick = { message = null }) { Text("知道了") }
+            }
         )
+    }
+}
+
+/** 待处理队列里的一页：文件缩略图 + 页码 + 删除。 */
+@Composable
+private fun PendingPageCard(
+    file: File,
+    index: Int,
+    enabled: Boolean,
+    onDelete: () -> Unit
+) {
+    // 缩略图只解码到 400px 长边，列表滚动不卡；退出页面时回收
+    var thumb by remember(file.path) { mutableStateOf<Bitmap?>(null) }
+    DisposableEffect(file.path) {
+        thumb = runCatching {
+            val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(file.absolutePath, opts)
+            val long = maxOf(opts.outWidth, opts.outHeight)
+            var sample = 1
+            while (long / sample > 400) sample *= 2
+            BitmapFactory.decodeFile(
+                file.absolutePath,
+                BitmapFactory.Options().apply { inSampleSize = sample }
+            )
+        }.getOrNull()
+        onDispose { runCatching { thumb?.recycle() }; thumb = null }
+    }
+
+    Card(
+        shape = RoundedCornerShape(13.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+    ) {
+        Column {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(150.dp)
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                contentAlignment = Alignment.Center
+            ) {
+                val bmp = thumb
+                if (bmp != null) {
+                    Image(
+                        bitmap = bmp.asImageBitmap(),
+                        contentDescription = "第 ${index + 1} 页待识别",
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    Text(
+                        text = "缩略图不可用",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 10.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "第 ${index + 1} 页（待识别）",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium
+                )
+                Spacer(Modifier.weight(1f))
+                IconButton(onClick = onDelete, enabled = enabled) {
+                    Icon(
+                        Icons.Filled.Delete,
+                        contentDescription = "删除本页",
+                        tint = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+        }
     }
 }
 

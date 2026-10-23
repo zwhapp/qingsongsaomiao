@@ -48,3 +48,6 @@ nohup.out
 # doc_seg (GPL/fairscan-gpl) training artifacts - never publish
 tools/train/out_v*/
 tools/train/evalout_v*/
+
+# jvmcheck 桌面测试的构建缓存，不进版本库
+tools/jvmcheck/build/

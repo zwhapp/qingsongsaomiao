@@ -2,6 +2,7 @@ package com.openscan.docscan.ui.screen
 
 import android.graphics.Bitmap
 import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -27,6 +28,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -98,6 +100,14 @@ fun ReviewScreen(
     var isDetecting by remember { mutableStateOf(false) }
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
     var errorText by remember { mutableStateOf<String?>(null) }
+    // 离开确认：本页有正在处理的图时，防止误触返回直接丢弃（v1.5.20）
+    var showLeaveConfirm by remember { mutableStateOf(false) }
+
+    // 返回（含系统返回键）：有正在处理的图先确认
+    fun requestLeave() {
+        if (sourceBitmap != null) showLeaveConfirm = true else onBack()
+    }
+    BackHandler(enabled = true) { requestLeave() }
 
     // 相册选择器
     val pickLauncher = rememberLauncherForActivityResult(
@@ -168,7 +178,7 @@ fun ReviewScreen(
             TopAppBar(
                 title = { Text("调整边缘") },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
+                    IconButton(onClick = { requestLeave() }) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
                     }
                 },
@@ -300,6 +310,27 @@ fun ReviewScreen(
                 )
             }
         }
+    }
+
+    // 离开确认（v1.5.20）：有正在裁剪的图时，返回前先问一句，
+    // 避免误触把这一页直接丢掉
+    if (showLeaveConfirm) {
+        AlertDialog(
+            onDismissRequest = { showLeaveConfirm = false },
+            title = { Text("放弃当前页面") },
+            text = { Text("当前正在裁剪的页面尚未保存，返回后它会被丢弃。确定放弃吗？") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showLeaveConfirm = false
+                    onBack()
+                }) {
+                    Text("放弃并返回", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showLeaveConfirm = false }) { Text("继续裁剪") }
+            }
+        )
     }
 }
 

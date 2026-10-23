@@ -103,10 +103,9 @@ fun AppNavHost(
         composable(Routes.CAMERA) {
             CameraScreen(
                 onBack = { navController.popBackStack() },
-                onCaptured = {
-                    navController.navigate(Routes.REVIEW)
-                },
-                // 已扫页数角标：直接跳到页面管理
+                // 连拍模式：拍完所有页点「完成拍摄」→ 页面管理页统一识别
+                onFinish = { navController.navigate(Routes.PAGES) },
+                // 已拍页数角标：直接跳到页面管理
                 onOpenPages = {
                     navController.navigate(Routes.PAGES)
                 }

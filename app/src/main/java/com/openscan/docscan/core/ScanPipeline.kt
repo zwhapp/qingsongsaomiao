@@ -85,7 +85,11 @@ class ScanPipeline(private val context: Context) {
     /** 处理参数。 */
     data class Options(
         val quad: DocumentGeometry.Quad? = null,
-        val enhance: ScanEnhancer.Mode = ScanEnhancer.Mode.DE_SHADOW,
+        /**
+         * 增强模式。★ v1.5.20：默认改为黑白文档——扫描场景最常用，
+         * 与增强页/批量识别页的默认选项一致。
+         */
+        val enhance: ScanEnhancer.Mode = ScanEnhancer.Mode.BLACK_WHITE,
         /** 输出目标长边（px）。<= 0 表示保持矫正后的原始尺寸，不做任何放大。 */
         val targetLongEdge: Int = 0
     )

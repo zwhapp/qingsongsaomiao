@@ -5,10 +5,10 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
+import androidx.activity.compose.BackHandler
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
-import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -36,12 +37,15 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -65,17 +69,21 @@ import java.io.File
 import java.util.concurrent.Executor
 
 /**
- * 拍照界面。
+ * 拍照界面（连拍模式）。
  *
- * 使用 CameraX preview + ImageCapture，拍照结果写入应用私有缓存目录，
- * 交由后续裁剪流程消费。
+ * ★ v1.5.20 连拍统一识别：拍一张只是把原图存进 [ScanSession] 待处理队列，
+ * **不做任何识别/矫正/增强**——不再每拍一张就跳裁剪页卡几秒。用户拍完
+ * 所有页后点「完成拍摄」，在页面管理页一次性批量处理。
  *
- * 支持连拍：已扫描的页数会显示在顶部，拍完一张后自动回到本页继续拍。
+ * 取景框与成像范围严格一致：preview 用 FIT_CENTER 显示传感器完整画面
+ * （letterbox 上下留黑边），取景框按同一 4:3 区域绘制。旧实现用
+ * FILL_CENTER 把预览画面放大裁切，用户看到的框比实际成像范围小，
+ * 拍到的内容永远比框里多一圈。
  */
 @Composable
 fun CameraScreen(
     onBack: () -> Unit,
-    onCaptured: () -> Unit,
+    onFinish: () -> Unit,
     onOpenPages: () -> Unit
 ) {
     val context = LocalContext.current
@@ -85,12 +93,21 @@ fun CameraScreen(
     var torchOn by remember { mutableStateOf(false) }
     var isSaving by remember { mutableStateOf(false) }
     var errorText by remember { mutableStateOf<String?>(null) }
+    var showBackConfirm by remember { mutableStateOf(false) }
 
     val store = remember { DocumentStore(context) }
     val executor = remember { ContextCompat.getMainExecutor(context) }
 
-    // 会话里的页数变化时自动重组，角标实时更新
-    val scannedCount = ScanSession.pageCount
+    // 待处理队列变化时自动重组，角标实时更新
+    val pendingCount = ScanSession.pendingCount
+    val processedCount = ScanSession.pageCount
+
+    // 有未保存内容时，退出相机必须先确认，防止误触返回丢失已拍内容
+    val hasUnsaved = pendingCount > 0 || processedCount > 0
+    fun requestBack() {
+        if (hasUnsaved) showBackConfirm = true else onBack()
+    }
+    BackHandler(enabled = true) { requestBack() }
 
     Box(
         modifier = Modifier
@@ -101,7 +118,10 @@ fun CameraScreen(
             modifier = Modifier.fillMaxSize(),
             factory = { ctx ->
                 val previewView = PreviewView(ctx).apply {
-                    scaleType = PreviewView.ScaleType.FILL_CENTER
+                    // FIT_CENTER：完整显示传感器 4:3 画面（上下 letterbox），
+                    // 保证取景框内 = 实际成像范围。FILL_CENTER 会放大裁切，
+                    // 所见远小于所得。
+                    scaleType = PreviewView.ScaleType.FIT_CENTER
                     implementationMode = PreviewView.ImplementationMode.COMPATIBLE
                 }
                 bindCamera(ctx, lifecycleOwner, previewView, executor) { capture ->
@@ -111,8 +131,24 @@ fun CameraScreen(
             }
         )
 
-        // 取景辅助框
-        FramingOverlay()
+        // 取景辅助框：与实际预览区同一 4:3 矩形（预览 FIT_CENTER 后
+        // 宽占满、高 = 宽×4/3，上下留黑）
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(4f / 3f)
+                    .padding(horizontal = 24.dp)
+                    .border(
+                        width = 1.dp,
+                        color = Color.White.copy(alpha = 0.5f),
+                        shape = RoundedCornerShape(12.dp)
+                    )
+            )
+        }
 
         // 顶部栏
         Row(
@@ -122,7 +158,7 @@ fun CameraScreen(
                 .padding(horizontal = 8.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(onClick = onBack) {
+            IconButton(onClick = { requestBack() }) {
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                     contentDescription = "返回",
@@ -131,8 +167,8 @@ fun CameraScreen(
             }
             Spacer(Modifier.weight(1f))
 
-            // 已扫描页数角标：会话里有页面时出现，点击直接进入页面管理
-            if (scannedCount > 0) {
+            // 角标：已拍（待处理）+ 已处理页数，点击直接进入页面管理
+            if (pendingCount > 0 || processedCount > 0) {
                 Surface(
                     color = Color.Black.copy(alpha = 0.55f),
                     shape = RoundedCornerShape(50),
@@ -143,7 +179,11 @@ fun CameraScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "已扫 $scannedCount 页",
+                            text = if (pendingCount > 0) {
+                                "已拍 $pendingCount 页待处理"
+                            } else {
+                                "已处理 $processedCount 页"
+                            },
                             style = MaterialTheme.typography.labelLarge,
                             color = Color.White
                         )
@@ -194,8 +234,8 @@ fun CameraScreen(
             }
 
             Text(
-                text = if (scannedCount > 0) {
-                    "已扫 $scannedCount 页，继续拍或点右上角完成"
+                text = if (pendingCount > 0) {
+                    "已拍 $pendingCount 页，拍完后点「完成」统一识别"
                 } else {
                     "将纸张完整放入框内，尽量保持平整"
                 },
@@ -220,8 +260,8 @@ fun CameraScreen(
                         executor = executor,
                         store = store,
                         onSuccess = {
+                            // 只入队，不跳转、不识别——连拍继续
                             isSaving = false
-                            onCaptured()
                         },
                         onError = { e ->
                             isSaving = false
@@ -230,6 +270,20 @@ fun CameraScreen(
                     )
                 }
             )
+
+            // 「完成拍摄」：拍满收工，去页面管理页统一识别
+            if (pendingCount > 0) {
+                Spacer(Modifier.height(14.dp))
+                Button(
+                    onClick = onFinish,
+                    enabled = !isSaving,
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Icon(Icons.Filled.Check, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("完成拍摄（$pendingCount 页）")
+                }
+            }
         }
     }
 
@@ -245,6 +299,41 @@ fun CameraScreen(
         onDispose {
             // CameraX 生命周期由 lifecycleOwner 自动管理，无需手动解绑
         }
+    }
+
+    // 退出确认：有已拍未处理 / 已处理的页面时，防止误触返回丢失
+    if (showBackConfirm) {
+        AlertDialog(
+            onDismissRequest = { showBackConfirm = false },
+            title = { Text("退出拍摄") },
+            text = {
+                Text(
+                    buildString {
+                        append("当前有 ")
+                        append(pendingCount)
+                        append(" 页待处理")
+                        if (processedCount > 0) {
+                            append("、")
+                            append(processedCount)
+                            append(" 页已处理")
+                        }
+                        append("。退出后这些内容不会保存，确定要丢弃吗？")
+                    }
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showBackConfirm = false
+                    ScanSession.clear()
+                    onBack()
+                }) {
+                    Text("丢弃并退出", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBackConfirm = false }) { Text("继续拍摄") }
+            }
+        )
     }
 }
 
@@ -289,26 +378,6 @@ private fun ShutterButton(
     }
 }
 
-/** 四角取景框，纯装饰，提示用户文档应落在什么范围内。 */
-@Composable
-private fun FramingOverlay() {
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 24.dp, vertical = 150.dp)
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .border(
-                    width = 1.dp,
-                    color = Color.White.copy(alpha = 0.28f),
-                    shape = RoundedCornerShape(12.dp)
-                )
-        )
-    }
-}
-
 // ---------------- CameraX 绑定与拍摄 ----------------
 
 @SuppressLint("UnsafeOptInUsageError")
@@ -323,9 +392,12 @@ private fun bindCamera(
     future.addListener({
         val provider = future.get()
 
-        val preview = Preview.Builder().build().also {
-            it.surfaceProvider = previewView.surfaceProvider
-        }
+        val preview = Preview.Builder()
+            // 锁死 4:3，与取景框 aspectRatio 一致，保证所见即所得
+            .setTargetAspectRatio(androidx.camera.core.AspectRatio.RATIO_4_3)
+            .build().also {
+                it.surfaceProvider = previewView.surfaceProvider
+            }
 
         val capture = ImageCapture.Builder()
             .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
@@ -361,10 +433,10 @@ private fun takePhoto(
         executor,
         object : ImageCapture.OnImageSavedCallback {
             override fun onImageSaved(output: ImageCapture.OutputFileResults) {
-                // 修正 EXIF 方向并写入统一命名，供裁剪流程读取
+                // 修正 EXIF 方向，然后**只入队**：识别统一放在拍完所有页之后
                 runCatching {
                     normalizeOrientation(target)
-                    ScanSession.capturedFile = target
+                    ScanSession.enqueuePending(target)
                 }.onFailure {
                     onError(it)
                     return

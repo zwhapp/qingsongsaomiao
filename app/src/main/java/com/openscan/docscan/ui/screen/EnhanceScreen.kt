@@ -1,6 +1,7 @@
 package com.openscan.docscan.ui.screen
 
 import android.graphics.Bitmap
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -27,6 +28,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.HighQuality
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -36,6 +38,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -72,6 +75,9 @@ import kotlinx.coroutines.launch
  * 之前把"高清增强 2x / 超清 4x"和模式混在一排按钮里，用户既分不清
  * 是换了处理方式还是只换了尺寸，也没法组合（比如"黑白 + 极清"）。
  * 现在两组正交：先选效果，再选输出分辨率，任意组合。
+ *
+ * ★ v1.5.20：默认效果改为黑白（扫描文档最常用）。列表第一项即
+ * 打开界面时的选中项。
  */
 private data class EffectOption(
     val label: String,
@@ -79,8 +85,8 @@ private data class EffectOption(
 )
 
 private val EFFECT_OPTIONS = listOf(
-    EffectOption("去阴影", ScanEnhancer.Mode.DE_SHADOW),
     EffectOption("黑白文档", ScanEnhancer.Mode.BLACK_WHITE),
+    EffectOption("去阴影", ScanEnhancer.Mode.DE_SHADOW),
     EffectOption("去手写", ScanEnhancer.Mode.REMOVE_INK),
     EffectOption("灰度", ScanEnhancer.Mode.GRAYSCALE),
     EffectOption("原图", ScanEnhancer.Mode.ORIGINAL)
@@ -130,6 +136,14 @@ fun EnhanceScreen(
     // 待处理的源图：来自裁剪页刚刚确认的那一页
     val source = reviewSource
     val quad = reviewQuad
+
+    // 离开确认（v1.5.20）：这一页还没加入文档，返回前先问一句，
+    // 避免误触把整页处理结果丢掉
+    var showLeaveConfirm by remember { mutableStateOf(false) }
+    fun requestLeave() {
+        if (source != null && !saving) showLeaveConfirm = true else onBack()
+    }
+    BackHandler(enabled = true) { requestLeave() }
 
     // 初次进入或换效果时重算预览。
     // 注意不要把 resolution 放进 key：预览固定跑 PREVIEW_MAX_EDGE，
@@ -188,7 +202,7 @@ fun EnhanceScreen(
             TopAppBar(
                 title = { Text("增强效果") },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
+                    IconButton(onClick = { requestLeave() }) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
                     }
                 },
@@ -456,6 +470,26 @@ fun EnhanceScreen(
                 )
             }
         }
+    }
+
+    // 离开确认（v1.5.20）：这一页还没加入文档，返回前先问一句
+    if (showLeaveConfirm) {
+        AlertDialog(
+            onDismissRequest = { showLeaveConfirm = false },
+            title = { Text("放弃当前页面") },
+            text = { Text("当前页面还没有加入文档，返回后刚才的处理会丢失。确定放弃吗？") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showLeaveConfirm = false
+                    onBack()
+                }) {
+                    Text("放弃并返回", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showLeaveConfirm = false }) { Text("继续处理") }
+            }
+        )
     }
 }
 

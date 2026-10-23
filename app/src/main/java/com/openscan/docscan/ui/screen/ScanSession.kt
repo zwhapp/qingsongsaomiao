@@ -40,6 +40,18 @@ object ScanSession {
     /** 已确认的页面草稿，按扫描顺序。 */
     private val _pages = mutableStateListOf<Draft>()
 
+    /**
+     * 连拍待处理队列：已拍下、尚未做识别/矫正/增强的原图文件。
+     *
+     * ★ 连拍统一识别（v1.5.20）：拍照只入队、不即时识别。用户拍完全部
+     * 页面后点「完成拍摄」，在页面管理页一次性批量跑管线——既避免每拍
+     * 一张就卡几秒，也让用户先核对页序再花时间处理。
+     * 文件由相机页写入、批量处理取走，处理成功即从队列移除并删除原图。
+     */
+    private val _pendingFiles = mutableStateListOf<java.io.File>()
+    val pendingFiles: List<java.io.File> get() = _pendingFiles
+    val pendingCount: Int get() = _pendingFiles.size
+
     /** 会话是否处于活跃状态（用于首页文案与返回键行为）。 */
     var active by mutableStateOf(false)
         private set
@@ -83,8 +95,28 @@ object ScanSession {
         return true
     }
 
+    /** 连拍原图入队（只排队，不识别）。 */
+    fun enqueuePending(file: java.io.File) {
+        _pendingFiles.add(file)
+    }
+
+    /** 从待处理队列移除一张原图（用户删页时调用，同时删除文件）。 */
+    fun removePendingAt(index: Int) {
+        if (index !in _pendingFiles.indices) return
+        runCatching { _pendingFiles.removeAt(index).delete() }
+    }
+
+    /** 取出并清空整个待处理队列（批量处理开始时调用）。 */
+    fun takeAllPending(): List<java.io.File> {
+        val all = _pendingFiles.toList()
+        _pendingFiles.clear()
+        return all
+    }
+
     fun clear() {
         releaseAll()
+        _pendingFiles.forEach { runCatching { it.delete() } }
+        _pendingFiles.clear()
         capturedFile = null
         active = false
     }
