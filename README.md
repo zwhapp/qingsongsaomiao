@@ -15,14 +15,16 @@
 | 多页会话 | 内存草稿 + 排序/删除后一次性落盘 | `ui/screen/ScanSession.kt` |
 | 全流程编排 | 可组合管线 + 分级降级 | `core/ScanPipeline.kt` |
 
-**不声明 `INTERNET` 权限**，从系统层面保证数据不出本机。
+**用户内容（图片 / OCR 文本 / PDF）全部在本机处理，不上传任何服务器。**
+唯一的网络行为是分发版的「检查更新」：读取 GitHub Releases 公开 API
+拿版本号，详见 [PRIVACY.md](PRIVACY.md)。自用版构建不含该功能。
 
 ---
 
 ## 一、最快出 APK 的方式
 
-> **旧的 `build-apk.bat` / `build-apk.ps1` 已废弃**，移到了 `_deprecated/`。
-> 那两个脚本是「本机什么都没装」时代的产物，现在环境齐了，直接用官方 `gradlew` 更快更可靠。
+> 旧的 `build-apk.bat` / `build-apk.ps1` 已废弃（这两个文件不在仓库中，
+> 仅存在于维护者本机的 `_deprecated/` 目录），现在直接用官方 `gradlew`。
 > 完整打包说明见 **[`BUILD-APK.md`](BUILD-APK.md)**。
 
 ### 方式 A：命令行（推荐，最快）
@@ -100,7 +102,6 @@ export JAVA_HOME=/path/to/jdk17
 
 ```
 DocScanPro/
-├── build-apk.bat / build-apk.ps1    # ★ 一键构建脚本
 ├── gradlew / gradlew.bat            # Gradle 启动器（自动补齐 wrapper jar）
 ├── app/src/main/java/com/openscan/docscan/
 │   ├── DocScanApplication.kt        # Application，OpenCV 预热
@@ -424,6 +425,9 @@ APK 装上后按这个顺序验证：
 
 ### ✅ 已实际编译通过
 
+> 以下数据为 v1.4.x 时期的历史记录，保留作为方法论参考；
+> 当前版本的实测数据见 CI / 维护者构建日志。
+
 本工程**已在真机构建环境上跑通完整 Gradle 构建**：
 
 ```
@@ -462,24 +466,21 @@ $env:JAVA_HOME = "D:\Android\JDK17"
 | `Unresolved reference 'systemBars'` | `ReviewScreen.kt` | 写成全限定名 `WindowInsets.systemBars`，但它是 `WindowInsets.Companion` 的**扩展属性**，全限定名写不出来。需 import `...layout.systemBars`，并同时 import `WindowInsets` 类型 |
 | `This material API is experimental` ×16 | 5 个 UI 文件 | TopAppBar/Scaffold 需 opt-in。改为在 `kotlinOptions` 里统一加 `-opt-in=androidx.compose.material3.ExperimentalMaterial3Api`，而不是逐个 composable 加 `@OptIn` |
 
-### 另一个真实缺陷：依赖偷偷加了联网权限
+### 依赖注入的权限：必须核对最终 APK 的 badging
 
-构建产物的清单里出现了 `android.permission.INTERNET` 和 `ACCESS_NETWORK_STATE`，
-**而本应用的核心承诺就是"完全离线"**。根因是 ML Kit 的 AAR 在清单合并时自动注入。
+构建产物的清单里会出现 ML Kit AAR 自动注入的 `android.permission.INTERNET`
+与 `ACCESS_NETWORK_STATE`——**而本应用对外的承诺是"用户内容不出本机"**。
 
-已在工程 manifest 中显式剔除：
+当前处置（`AndroidManifest.xml`）：
 
-```xml
-<uses-permission android:name="android.permission.INTERNET" tools:node="remove" />
-<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" tools:node="remove" />
-```
+- `INTERNET` **显式声明**：分发版的「检查更新」需要它（只读 GitHub Releases
+  公开 API，不上传任何数据）；
+- `ACCESS_NETWORK_STATE` 继续用 `tools:node="remove"` 剔除（对检查更新无用）。
 
-修后 `aapt2 dump badging` 确认仅剩：
+核对命令：
 
-```
-CAMERA
-WRITE_EXTERNAL_STORAGE (maxSdkVersion=28)
-READ_EXTERNAL_STORAGE  (maxSdkVersion=28)
+```bash
+aapt2 dump badging app-release.apk | grep permission
 ```
 
 > **教训：清单合并会掺进依赖声明的权限。必须检查最终 APK 的 badging，
@@ -528,26 +529,27 @@ public interface ...RowScope {
 ### 当前版本限制
 
 1. **PDF 字体未子集化**。见第六节末尾，会让 PDF 大几 MB。
-2. **没有手写擦除**。需要笔画分类模型 + 图像修补（inpainting），是独立课题。
+2. **无竖排/繁简混排优化**。ML Kit 中文模型对竖排文本的框选不够准。
 3. **超分模型需自备**。见第七节。
-4. **无竖排/繁简混排优化**。ML Kit 中文模型对竖排文本的框选不够准。
-5. **未做 UI 自动化测试**。核心算法建议补单元测试
+4. **未做 UI 自动化测试**。核心算法建议补单元测试
    （`ScanEnhancer` 的纯函数部分容易测）。
-6. **多页草稿只在内存**。App 被系统杀掉后草稿会丢。
+5. **多页草稿只在内存**。App 被系统杀掉后草稿会丢。
 
 ### 发布到商店前需要处理
 
-- 换掉 `applicationId`（当前是 `com.openscan.docscan`）
-- 生成正式签名 keystore
-- 隐私政策网页（即使完全离线，各商店都要求提供）
+- 隐私政策网页（即使完全离线，各商店都要求提供；仓库内
+  [PRIVACY.md](PRIVACY.md) 可作为文本底稿）
 - **软件著作权**：国内商店（含应用宝）上架必交，申请需 15-30 个工作日
 - 若内置第三方超分模型，确认许可证允许分发
 - **检查 ML Kit 的许可条款**：ML Kit 用的是 Google 的 ML Kit Terms，
   与 Apache-2.0 不同，商业化分发前请确认符合你的使用场景
+- 包名 `com.openscan.docscan` 与签名证书 `CN=OpenScan` 已**刻意保持不变**：
+  一旦上架即被签名一致性锁定，改名需重签 keystore、旧用户必须卸载重装
 
 > 补充：纯离线单机工具可豁免 **ICP 备案**和**工信部 APP 备案**。
-> 本 App 未声明 `INTERNET` 权限，正好符合豁免条件。
-> 但**软著仍是硬性要求**，无法豁免。
+> 但注意分发版已声明 `INTERNET` 权限用于检查更新（仅请求 GitHub 公开 API），
+> 豁免结论需按最终形态向主管部门确认；自用版不声明该权限。
+> **软著仍是硬性要求**，无法豁免。
 
 ---
 
@@ -596,3 +598,17 @@ public interface ...RowScope {
   —— 没有该文件时工程也能完整构建，检测链自动降级为纯 OpenCV 方案。
 - 签名密钥（`*.jks`、`keystore.properties`）不在仓库中，请自行生成，
   可参考 `gen-keystore.ps1`。
+- 更新历史见 [CHANGELOG.md](CHANGELOG.md)，隐私说明见 [PRIVACY.md](PRIVACY.md)。
+
+## 附：自用版构建（维护者向）
+
+公开仓库的默认 `versionName` 是合规版（如 `1.5.21`）。自用版会在
+`versionName` 里带 `selfuse` 标记，`SelfCheck` 据此断言 assets 里必须有
+GPL-3.0 分割模型。构建命令：
+
+```powershell
+.\gradlew.bat assembleRelease -PversionName=1.5.21-selfuse
+```
+
+`tools/` 下的调试图片（含出版物书页照片）与探测用二进制**不在仓库中**，
+仅存在于维护者本机；克隆者运行离线验证脚本前需自行准备测试图。

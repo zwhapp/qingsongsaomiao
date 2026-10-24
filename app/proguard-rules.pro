@@ -38,3 +38,13 @@
 # 保留 Compose 相关（AGP 会自动处理，这里兜底）
 -keep class androidx.compose.** { *; }
 -dontwarn androidx.compose.**
+
+# --- release 包剥离调试日志（2026-10-24 合规整改）---
+# 源码里只有 5 处 Log.e/i（OpenCV 初始化、OCR 消歧、模型加载状态），
+# 不含任何用户数据；这里把 verbose/debug/info 在 release 包中整体删掉，
+# 保留 warn/error 便于线上问题排查。
+-assumenosideeffects class android.util.Log {
+    public static *** v(...);
+    public static *** d(...);
+    public static *** i(...);
+}

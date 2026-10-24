@@ -63,6 +63,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.res.stringResource
+import com.openscan.docscan.R
 import com.openscan.docscan.core.OpenCvLoader
 import com.openscan.docscan.core.ScanEnhancer
 import com.openscan.docscan.core.ScanPipeline
@@ -80,16 +82,25 @@ import kotlinx.coroutines.launch
  * 打开界面时的选中项。
  */
 private data class EffectOption(
-    val label: String,
     val mode: ScanEnhancer.Mode
 )
 
 private val EFFECT_OPTIONS = listOf(
-    EffectOption("黑白文档", ScanEnhancer.Mode.BLACK_WHITE),
-    EffectOption("去阴影", ScanEnhancer.Mode.DE_SHADOW),
-    EffectOption("去手写", ScanEnhancer.Mode.REMOVE_INK),
-    EffectOption("灰度", ScanEnhancer.Mode.GRAYSCALE),
-    EffectOption("原图", ScanEnhancer.Mode.ORIGINAL)
+    EffectOption(ScanEnhancer.Mode.BLACK_WHITE),
+    EffectOption(ScanEnhancer.Mode.DE_SHADOW),
+    EffectOption(ScanEnhancer.Mode.REMOVE_INK),
+    EffectOption(ScanEnhancer.Mode.GRAYSCALE),
+    EffectOption(ScanEnhancer.Mode.ORIGINAL)
+)
+
+// 效果模式 → strings.xml 文案（2026-10-24：标签原先硬编码在 Kotlin 里，
+// 与其它走 strings.xml 的界面文案不一致，不利于后续多语言与统一维护）。
+private val EFFECT_LABEL_RES = mapOf(
+    ScanEnhancer.Mode.BLACK_WHITE to R.string.filter_bw,
+    ScanEnhancer.Mode.DE_SHADOW to R.string.filter_magic,
+    ScanEnhancer.Mode.REMOVE_INK to R.string.filter_remove_ink,
+    ScanEnhancer.Mode.GRAYSCALE to R.string.filter_gray,
+    ScanEnhancer.Mode.ORIGINAL to R.string.filter_original
 )
 
 /**
@@ -261,7 +272,9 @@ fun EnhanceScreen(
                         ) {
                             EFFECT_OPTIONS.forEach { option ->
                                 EffectChip(
-                                    label = option.label,
+                                    label = stringResource(
+                                        EFFECT_LABEL_RES[option.mode] ?: R.string.filter_bw
+                                    ),
                                     selected = option == selected,
                                     enabled = !processing && !saving,
                                     onClick = { selected = option }

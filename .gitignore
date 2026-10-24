@@ -51,3 +51,27 @@ tools/train/evalout_v*/
 
 # jvmcheck 桌面测试的构建缓存，不进版本库
 tools/jvmcheck/build/
+
+# --- 内部调试图片与算法对比图（2026-10-24 合规整改）---
+# tools/ 下累计 190+ 张对比图/热力图，其中 book2.jpg、photo_full.jpg、
+# text_photo_full.jpg 等是真实出版物书页照片——受版权保护的出版物内容，
+# 放在公开仓库等于无限复制分发。文件保留在磁盘供本地复现，但不入版本库。
+tools/**/*.jpg
+tools/**/*.jpeg
+tools/**/*.png
+tools/**/*.gif
+tools/**/*.bmp
+tools/**/*.mp4
+
+# --- 本地探测用的第三方二进制与编译产物 ---
+# libtensorflowlite_jni.so / tflite.jar 等是从 TFLite AAR 拆出的探测用文件，
+# *.class 是 javac 产物；均属开发期本地文件，不对外分发。
+tools/**/*.so
+tools/**/*.jar
+tools/**/*.class
+tools/**/dl/
+
+# --- 内部部署工具的日志与本地缓存 ---
+# deploy_fn.log 等可能含环境标识；.wrangler/ 内含 Cloudflare 账号信息。
+tools/**/*.log
+tools/counter/.wrangler/

@@ -44,7 +44,12 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = 51
-        versionName = "1.5.21-selfuse"
+        // 版本号默认取「合规版」（不内置 GPL-3.0 分割模型，可对外分发）。
+        // versionName 含 "selfuse" 是自用版标志：SelfCheck 会据此断言
+        // assets 里必须有 doc_segmentation.tflite（该模型受 GPL-3.0 +
+        // CC BY-NC-SA 约束，不在本仓库、也不得再分发）。
+        // 自用版构建：gradlew assembleRelease -PversionName=1.5.21-selfuse
+        versionName = (project.findProperty("versionName") as String?) ?: "1.5.21"
 
         vectorDrawables { useSupportLibrary = true }
 
