@@ -5,6 +5,13 @@
     <!-- 相机拍摄文档 -->
     <uses-permission android:name="android.permission.CAMERA" />
 
+    <!-- 相册批量导入：读取用户所选的图片（Android 13+ 用 READ_MEDIA_IMAGES，
+         旧版本用 READ_EXTERNAL_STORAGE）。仅用于导入，不联网、不上传。 -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+
     <!-- 仅 Android 9 及以下需要，用于保存导出文件 -->
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"

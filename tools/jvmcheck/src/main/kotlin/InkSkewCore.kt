@@ -450,10 +450,26 @@ object InkSkew {
                 val ch = stats.get(i, 3)[0]
                 val area = stats.get(i, 4)[0]
                 val touches = x == 0.0 || y == 0.0 || x + cw >= w || y + ch >= h
-                if (!touches || area < w * h * 0.005) continue
-                val horizontal = cw >= w * 0.95 && ch >= h * 0.005
-                val vertical = ch >= h * 0.95 && cw >= w * 0.005
-                if (horizontal || vertical) {
+                if (!touches) continue
+                val horizontal = area >= w * h * 0.005 && cw >= w * 0.95 && ch >= h * 0.005
+                val vertical = area >= w * h * 0.005 && ch >= h * 0.95 && cw >= w * 0.005
+
+                // 弯曲纸边残留的弧线/细边不需要横跨 95% 画幅。真机 WPS 对拍
+                // 样张中：顶弧仅 77% 宽/0.40% 面积、底弧 34% 宽/0.17%、
+                // 左边线 23% 高/0.055%，旧判据全部漏掉。补充"贴边 + 薄长 +
+                // 非实心"判据；fill≤92% 避免误删贴边实心表格线，正文的
+                // 独立字块也无法形成这种横跨 20% 画幅的单一连通域。
+                val fill = if (cw > 0.0 && ch > 0.0) area / (cw * ch) else 1.0
+                val curved = fill <= 0.92
+                val topArc = y == 0.0 && cw >= w * 0.20 && ch <= h * 0.04 &&
+                    area >= w * h * 0.0005 && curved
+                val bottomArc = y + ch >= h && cw >= w * 0.20 && ch <= h * 0.04 &&
+                    area >= w * h * 0.0005 && curved
+                val leftArc = x == 0.0 && ch >= h * 0.15 && cw <= w * 0.02 &&
+                    area >= w * h * 0.0002 && curved
+                val rightArc = x + cw >= w && ch >= h * 0.15 && cw <= w * 0.02 &&
+                    area >= w * h * 0.0002 && curved
+                if (horizontal || vertical || topArc || bottomArc || leftArc || rightArc) {
                     remove[i] = true
                     any = true
                 }
@@ -1064,6 +1080,78 @@ object InkSkew {
             val m = Core.mean(r).`val`[0]
             r.release()
             if (m < TRIM_ABS_MAX && m < cMean - TRIM_REL_DIFF) x1 -= band else break
+        }
+
+        // 弧形纸边二次内裁：上面的整带均值只能处理"整条都是桌面"的直边。
+        // 真实纸张上/下边弯曲时，暗色桌面只占带内的 10%~30%，均值仍接近纸白，
+        // 于是黑弧原样进入增强（真机 WPS 对拍样张：顶部 77% 宽黑弧、底部
+        // 34% 宽黑弧、左侧 23% 高黑线全部漏裁）。这里在 ≤1000px 的工作图上
+        // 找"贴边 + 薄而长 + 非实心"的暗连通域，只按它的实际侵入深度内裁：
+        //   · 上/下弧：宽 ≥20%W、厚 ≤4%H、面积 ≥0.05%；
+        //   · 左/右弧：高 ≥15%H、宽 ≤2%W、面积 ≥0.02%。
+        // 填充率 ≤92% 用来排除贴边的实心表格线；正文每个字是独立连通域，
+        // 也不会拼出一个 20% 宽的候选。裁剪而非把像素置白，不干扰 Sauvola。
+        val rw = x1 - x0
+        val rh = y1 - y0
+        if (rw >= 40 && rh >= 40) {
+            val roi = Mat(gray, Rect(x0, y0, rw, rh))
+            val small = Mat()
+            val dark = Mat()
+            val labels = Mat()
+            val stats = Mat()
+            val centroids = Mat()
+            try {
+                val f = minOf(1.0, 1000.0 / maxOf(rw, rh))
+                if (f < 1.0) {
+                    Imgproc.resize(roi, small, Size(), f, f, Imgproc.INTER_AREA)
+                } else {
+                    roi.copyTo(small)
+                }
+                val darkThr = minOf(TRIM_ABS_MAX, cMean - TRIM_REL_DIFF).coerceAtLeast(1.0)
+                Imgproc.threshold(small, dark, darkThr, 255.0, Imgproc.THRESH_BINARY_INV)
+                val sw = small.cols()
+                val sh = small.rows()
+                val n = Imgproc.connectedComponentsWithStats(dark, labels, stats, centroids)
+                var nx0 = 0; var ny0 = 0; var nx1 = sw; var ny1 = sh
+                for (i in 1 until n) {
+                    val x = stats.get(i, 0)[0]
+                    val y = stats.get(i, 1)[0]
+                    val cw = stats.get(i, 2)[0]
+                    val ch = stats.get(i, 3)[0]
+                    val area = stats.get(i, 4)[0]
+                    if (cw < 1.0 || ch < 1.0) continue
+                    val areaRatio = area / (sw.toDouble() * sh)
+                    val fill = area / (cw * ch)
+                    val curved = fill <= 0.92
+                    val topArc = y == 0.0 && cw >= sw * 0.20 && ch <= sh * 0.04 &&
+                        areaRatio >= 0.0005 && curved
+                    val bottomArc = y + ch >= sh && cw >= sw * 0.20 && ch <= sh * 0.04 &&
+                        areaRatio >= 0.0005 && curved
+                    val leftArc = x == 0.0 && ch >= sh * 0.15 && cw <= sw * 0.02 &&
+                        areaRatio >= 0.0002 && curved
+                    val rightArc = x + cw >= sw && ch >= sh * 0.15 && cw <= sw * 0.02 &&
+                        areaRatio >= 0.0002 && curved
+                    if (topArc) ny0 = maxOf(ny0, (y + ch).toInt())
+                    if (bottomArc) ny1 = minOf(ny1, y.toInt())
+                    if (leftArc) nx0 = maxOf(nx0, (x + cw).toInt())
+                    if (rightArc) nx1 = minOf(nx1, x.toInt())
+                }
+                if (nx0 > 0 || ny0 > 0 || nx1 < sw || ny1 < sh) {
+                    val sx = rw.toDouble() / sw
+                    val sy = rh.toDouble() / sh
+                    val addX0 = kotlin.math.ceil(nx0 * sx).toInt()
+                    val addY0 = kotlin.math.ceil(ny0 * sy).toInt()
+                    val addX1 = kotlin.math.ceil((sw - nx1) * sx).toInt()
+                    val addY1 = kotlin.math.ceil((sh - ny1) * sy).toInt()
+                    x0 = minOf(x0 + addX0, maxInset)
+                    y0 = minOf(y0 + addY0, maxInset)
+                    x1 = maxOf(x1 - addX1, w - maxInset)
+                    y1 = maxOf(y1 - addY1, h - maxInset)
+                }
+            } finally {
+                roi.release(); small.release(); dark.release()
+                labels.release(); stats.release(); centroids.release()
+            }
         }
 
         if (x0 == 0 && y0 == 0 && x1 == w && y1 == h) return null

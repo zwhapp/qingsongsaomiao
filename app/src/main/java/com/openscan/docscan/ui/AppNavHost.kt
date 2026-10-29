@@ -6,6 +6,7 @@ import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.navArgument
+import com.openscan.docscan.ui.screen.AlbumImportScreen
 import com.openscan.docscan.ui.screen.CameraScreen
 import com.openscan.docscan.ui.screen.DocumentListScreen
 import com.openscan.docscan.ui.screen.EnhanceScreen
@@ -24,6 +25,7 @@ object Routes {
     const val REVIEW = "review"           // 裁剪矫正
     const val ENHANCE = "enhance"         // 增强与放大
     const val PAGES = "pages"             // 多页管理 + 保存
+    const val ALBUM_IMPORT = "album_import" // 相册批量多选导入（按点选顺序）
     const val DOCUMENTS = "documents"
     const val DOC_DETAIL = "doc/{docId}"
     const val SELF_CHECK = "selfcheck"    // 环境自检（排查用）
@@ -77,7 +79,7 @@ fun AppNavHost(
                 },
                 onImport = {
                     ScanSession.start()
-                    navController.navigate(Routes.REVIEW)
+                    navController.navigate(Routes.ALBUM_IMPORT)
                 },
                 onOpenDocuments = { navController.navigate(Routes.DOCUMENTS) },
                 onOpenSelfCheck = { navController.navigate(Routes.SELF_CHECK) },
@@ -85,6 +87,18 @@ fun AppNavHost(
                 onOpenSponsor = { navController.navigate(Routes.SPONSOR) },
                 permissionDeniedHint = permissionDeniedHint,
                 dismissPermissionHint = dismissPermissionHint
+            )
+        }
+
+        composable(Routes.ALBUM_IMPORT) {
+            AlbumImportScreen(
+                onBack = { navController.popBackStack() },
+                onAdded = {
+                    // 入队完成后进入页面管理页统一识别；栈收敛为 HOME→PAGES
+                    navController.navigate(Routes.PAGES) {
+                        popUpTo(Routes.HOME) { inclusive = false }
+                    }
+                }
             )
         }
 

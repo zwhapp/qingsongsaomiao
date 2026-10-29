@@ -135,7 +135,7 @@ fun HomeScreen(
             PrimaryActionCard(
                 icon = Icons.Filled.PhotoLibrary,
                 title = "从相册导入",
-                subtitle = "处理已有的照片或截图",
+                subtitle = "多选照片，按所选顺序批量导入",
                 highlight = false,
                 onClick = onImport
             )

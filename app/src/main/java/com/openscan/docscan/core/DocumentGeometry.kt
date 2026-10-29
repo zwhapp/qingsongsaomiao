@@ -618,14 +618,42 @@ object DocumentGeometry {
      */
     fun rotateToLevel(src: Bitmap, angleDeg: Double): Bitmap {
         if (abs(angleDeg) < 0.05) return src
-        val matrix = Matrix().apply { postRotate(-angleDeg.toFloat()) }
-        // 旋转出界的四角必须填白。此前用 Bitmap.createBitmap(..., matrix)，
-        // 出界区是透明像素，转 BGR 后就是黑色——端正旋转在纸面四角留下
-        // 黑色楔形块，黑白二值化后原样保留（真机对比 WPS 输出观感差距的
-        // 来源之一）。白角在 Sauvola 判决下就是纸面，自然消隐。
-        val out = Bitmap.createBitmap(src.width, src.height, Bitmap.Config.ARGB_8888)
+        // 绕图像中心旋转（setRotate 带中心点），避免原点旋转的缺陷：
+        // 原点旋转 + 固定画布时，±90°/180° 转正会把整张内容甩到画布
+        // 之外（y'≤0 或 x'≤0），最终得到一张纯白空白页——这正是
+        // "含表格横躺照片识别为空白" 的根因（warp 后 estimateOrientation
+        // 判出 90° 转正，内容全部出界）。
+        // 这里绕中心旋转，再用旋转后四角的包围盒算出刚好容纳内容的新
+        // 画布尺寸，并把内容平移回非负坐标，内容一点不丢。
+        val cx = src.width / 2.0f
+        val cy = src.height / 2.0f
+        val matrix = Matrix().apply { setRotate(-angleDeg.toFloat(), cx, cy) }
+        // 旋转后四角坐标 → 包围盒
+        val corners = floatArrayOf(
+            0f, 0f,
+            src.width.toFloat(), 0f,
+            0f, src.height.toFloat(),
+            src.width.toFloat(), src.height.toFloat()
+        )
+        matrix.mapPoints(corners)
+        var minX = Float.MAX_VALUE; var maxX = -Float.MAX_VALUE
+        var minY = Float.MAX_VALUE; var maxY = -Float.MAX_VALUE
+        var i = 0
+        while (i < corners.size) {
+            val x = corners[i]; val y = corners[i + 1]
+            if (x < minX) minX = x
+            if (x > maxX) maxX = x
+            if (y < minY) minY = y
+            if (y > maxY) maxY = y
+            i += 2
+        }
+        val outW = (maxX - minX).toInt().coerceAtLeast(1)
+        val outH = (maxY - minY).toInt().coerceAtLeast(1)
+        val out = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888)
         val canvas = android.graphics.Canvas(out)
         canvas.drawColor(android.graphics.Color.WHITE)
+        // 把内容平移到画布内（抵消包围盒左上角的负偏移）
+        matrix.postTranslate(-minX, -minY)
         canvas.drawBitmap(src, matrix, null)
         return out
     }
@@ -777,6 +805,78 @@ object DocumentGeometry {
             val m = Core.mean(r).`val`[0]
             r.release()
             if (m < TRIM_ABS_MAX && m < cMean - TRIM_REL_DIFF) x1 -= band else break
+        }
+
+        // 弧形纸边二次内裁：上面的整带均值只能处理"整条都是桌面"的直边。
+        // 真实纸张上/下边弯曲时，暗色桌面只占带内的 10%~30%，均值仍接近纸白，
+        // 于是黑弧原样进入增强（真机 WPS 对拍样张：顶部 77% 宽黑弧、底部
+        // 34% 宽黑弧、左侧 23% 高黑线全部漏裁）。这里在 ≤1000px 的工作图上
+        // 找"贴边 + 薄而长 + 非实心"的暗连通域，只按它的实际侵入深度内裁：
+        //   · 上/下弧：宽 ≥20%W、厚 ≤4%H、面积 ≥0.05%；
+        //   · 左/右弧：高 ≥15%H、宽 ≤2%W、面积 ≥0.02%。
+        // 填充率 ≤92% 用来排除贴边的实心表格线；正文每个字是独立连通域，
+        // 也不会拼出一个 20% 宽的候选。裁剪而非把像素置白，不干扰 Sauvola。
+        val rw = x1 - x0
+        val rh = y1 - y0
+        if (rw >= 40 && rh >= 40) {
+            val roi = Mat(gray, Rect(x0, y0, rw, rh))
+            val small = Mat()
+            val dark = Mat()
+            val labels = Mat()
+            val stats = Mat()
+            val centroids = Mat()
+            try {
+                val f = minOf(1.0, 1000.0 / maxOf(rw, rh))
+                if (f < 1.0) {
+                    Imgproc.resize(roi, small, Size(), f, f, Imgproc.INTER_AREA)
+                } else {
+                    roi.copyTo(small)
+                }
+                val darkThr = minOf(TRIM_ABS_MAX, cMean - TRIM_REL_DIFF).coerceAtLeast(1.0)
+                Imgproc.threshold(small, dark, darkThr, 255.0, Imgproc.THRESH_BINARY_INV)
+                val sw = small.cols()
+                val sh = small.rows()
+                val n = Imgproc.connectedComponentsWithStats(dark, labels, stats, centroids)
+                var nx0 = 0; var ny0 = 0; var nx1 = sw; var ny1 = sh
+                for (i in 1 until n) {
+                    val x = stats.get(i, 0)[0]
+                    val y = stats.get(i, 1)[0]
+                    val cw = stats.get(i, 2)[0]
+                    val ch = stats.get(i, 3)[0]
+                    val area = stats.get(i, 4)[0]
+                    if (cw < 1.0 || ch < 1.0) continue
+                    val areaRatio = area / (sw.toDouble() * sh)
+                    val fill = area / (cw * ch)
+                    val curved = fill <= 0.92
+                    val topArc = y == 0.0 && cw >= sw * 0.20 && ch <= sh * 0.04 &&
+                        areaRatio >= 0.0005 && curved
+                    val bottomArc = y + ch >= sh && cw >= sw * 0.20 && ch <= sh * 0.04 &&
+                        areaRatio >= 0.0005 && curved
+                    val leftArc = x == 0.0 && ch >= sh * 0.15 && cw <= sw * 0.02 &&
+                        areaRatio >= 0.0002 && curved
+                    val rightArc = x + cw >= sw && ch >= sh * 0.15 && cw <= sw * 0.02 &&
+                        areaRatio >= 0.0002 && curved
+                    if (topArc) ny0 = maxOf(ny0, (y + ch).toInt())
+                    if (bottomArc) ny1 = minOf(ny1, y.toInt())
+                    if (leftArc) nx0 = maxOf(nx0, (x + cw).toInt())
+                    if (rightArc) nx1 = minOf(nx1, x.toInt())
+                }
+                if (nx0 > 0 || ny0 > 0 || nx1 < sw || ny1 < sh) {
+                    val sx = rw.toDouble() / sw
+                    val sy = rh.toDouble() / sh
+                    val addX0 = kotlin.math.ceil(nx0 * sx).toInt()
+                    val addY0 = kotlin.math.ceil(ny0 * sy).toInt()
+                    val addX1 = kotlin.math.ceil((sw - nx1) * sx).toInt()
+                    val addY1 = kotlin.math.ceil((sh - ny1) * sy).toInt()
+                    x0 = minOf(x0 + addX0, maxInset)
+                    y0 = minOf(y0 + addY0, maxInset)
+                    x1 = maxOf(x1 - addX1, w - maxInset)
+                    y1 = maxOf(y1 - addY1, h - maxInset)
+                }
+            } finally {
+                roi.release(); small.release(); dark.release()
+                labels.release(); stats.release(); centroids.release()
+            }
         }
 
         if (x0 == 0 && y0 == 0 && x1 == w && y1 == h) return null

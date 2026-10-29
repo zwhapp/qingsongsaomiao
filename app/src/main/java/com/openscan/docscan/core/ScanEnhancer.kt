@@ -453,10 +453,26 @@ object ScanEnhancer {
                 val ch = stats.get(i, 3)[0]
                 val area = stats.get(i, 4)[0]
                 val touches = x == 0.0 || y == 0.0 || x + cw >= w || y + ch >= h
-                if (!touches || area < w * h * 0.005) continue
-                val horizontal = cw >= w * 0.95 && ch >= h * 0.005
-                val vertical = ch >= h * 0.95 && cw >= w * 0.005
-                if (horizontal || vertical) {
+                if (!touches) continue
+                val horizontal = area >= w * h * 0.005 && cw >= w * 0.95 && ch >= h * 0.005
+                val vertical = area >= w * h * 0.005 && ch >= h * 0.95 && cw >= w * 0.005
+
+                // 弯曲纸边残留的弧线/细边不需要横跨 95% 画幅。真机 WPS 对拍
+                // 样张中：顶弧仅 77% 宽/0.40% 面积、底弧 34% 宽/0.17%、
+                // 左边线 23% 高/0.055%，旧判据全部漏掉。补充"贴边 + 薄长 +
+                // 非实心"判据；fill≤92% 避免误删贴边实心表格线，正文的
+                // 独立字块也无法形成这种横跨 20% 画幅的单一连通域。
+                val fill = if (cw > 0.0 && ch > 0.0) area / (cw * ch) else 1.0
+                val curved = fill <= 0.92
+                val topArc = y == 0.0 && cw >= w * 0.20 && ch <= h * 0.04 &&
+                    area >= w * h * 0.0005 && curved
+                val bottomArc = y + ch >= h && cw >= w * 0.20 && ch <= h * 0.04 &&
+                    area >= w * h * 0.0005 && curved
+                val leftArc = x == 0.0 && ch >= h * 0.15 && cw <= w * 0.02 &&
+                    area >= w * h * 0.0002 && curved
+                val rightArc = x + cw >= w && ch >= h * 0.15 && cw <= w * 0.02 &&
+                    area >= w * h * 0.0002 && curved
+                if (horizontal || vertical || topArc || bottomArc || leftArc || rightArc) {
                     remove[i] = true
                     any = true
                 }

@@ -43,6 +43,13 @@ class DocumentStore(private val context: Context) {
         File(captureCacheDir, "cap_${System.currentTimeMillis()}.jpg")
 
     /**
+     * 相册导入的临时文件（与相机拍摄同目录，处理成功后由页面管理页删除）。
+     * 命名带 nanoTime 防止批量复制时同毫秒冲突。
+     */
+    fun newImportFile(): File =
+        File(captureCacheDir, "imp_${System.nanoTime()}.jpg")
+
+    /**
      * 保存一页到私有目录。
      */
     suspend fun savePage(bitmap: Bitmap, docId: Long, pageIndex: Int): File =

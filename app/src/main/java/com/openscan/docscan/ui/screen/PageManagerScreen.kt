@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -105,6 +106,10 @@ fun PageManagerScreen(
     // 处理模式：默认黑白（与增强页默认一致，v1.5.20 起默认黑白）
     var mode by remember { mutableStateOf(ScanEnhancer.Mode.BLACK_WHITE) }
 
+    // 输出分辨率档位：默认超清 4000（与增强页一致）。此前批量识别写死
+    // ULTRA.targetLongEdge，缺少 UI 选择，用户无法按需调低/调高。
+    var resolution by remember { mutableStateOf(ScanPipeline.Resolution.ULTRA) }
+
     // 队列与已处理页都是会话里的可观察列表，增删后自动重组
     val pending = ScanSession.pendingFiles
     val pages = ScanSession.pages
@@ -199,7 +204,7 @@ fun PageManagerScreen(
                                                         options = ScanPipeline.Options(
                                                             quad = null,
                                                             enhance = mode,
-                                                            targetLongEdge = ScanPipeline.Resolution.ULTRA.targetLongEdge
+                                                            targetLongEdge = resolution.targetLongEdge
                                                         )
                                                     )
                                                     // process 可能返回源图本身（未矫正且原图模式），
@@ -208,7 +213,7 @@ fun PageManagerScreen(
                                                     ScanSession.addPage(
                                                         result.bitmap,
                                                         result.appliedQuad,
-                                                        ScanPipeline.Resolution.ULTRA.targetLongEdge
+                                                        resolution.targetLongEdge
                                                     )
                                                 }
                                             }.isSuccess
@@ -301,6 +306,40 @@ fun PageManagerScreen(
                                 )
                             }
                         }
+                        Spacer(Modifier.height(12.dp))
+                        // 分辨率选择条：4 个档位均分宽度，识别前可改
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "分辨率",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Row(
+                                modifier = Modifier.weight(1f),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                ScanPipeline.Resolution.all.forEach { r ->
+                                    ResolutionChip(
+                                        label = r.label,
+                                        hint = r.hint,
+                                        selected = r == resolution,
+                                        enabled = !processing && !saving,
+                                        onClick = { resolution = r },
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = "输出长边约 ${resolution.targetLongEdge}px",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
                 itemsIndexed(pending, key = { i, f -> "p$i-${f.name}" }) { index, file ->
@@ -584,4 +623,64 @@ private suspend fun saveSession(
     dao.insertPages(entities)
     onProgress(1f, "完成")
     docId
+}
+
+/**
+ * 分辨率档位胶囊（与增强页同款样式）。
+ * 选中态用 secondaryContainer 底色，未选中用 surfaceVariant + 细描边，
+ * 双行显示「档位名 / 说明」，让用户知道代价（极清更慢、文件更大）。
+ */
+@Composable
+private fun ResolutionChip(
+    label: String,
+    hint: String,
+    selected: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        color = if (selected) {
+            MaterialTheme.colorScheme.secondaryContainer
+        } else {
+            MaterialTheme.colorScheme.surfaceVariant
+        },
+        shape = RoundedCornerShape(11.dp),
+        modifier = modifier
+            .clickable(enabled = enabled) { onClick() }
+            .then(
+                if (selected) Modifier else Modifier.border(
+                    width = 1.dp,
+                    color = MaterialTheme.colorScheme.outline.copy(alpha = 0.28f),
+                    shape = RoundedCornerShape(11.dp)
+                )
+            )
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                maxLines = 1,
+                color = if (selected) {
+                    MaterialTheme.colorScheme.onSecondaryContainer
+                } else {
+                    MaterialTheme.colorScheme.onSurface
+                }
+            )
+            Text(
+                text = hint,
+                style = MaterialTheme.typography.labelSmall,
+                maxLines = 1,
+                color = if (selected) {
+                    MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.8f)
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                }
+            )
+        }
+    }
 }

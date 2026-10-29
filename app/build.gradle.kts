@@ -43,7 +43,7 @@ android {
         applicationId = "com.openscan.docscan"
         minSdk = 26
         targetSdk = 35
-        versionCode = 51
+        versionCode = 56
         // 版本号默认取「合规版」（不内置 GPL-3.0 分割模型，可对外分发）。
         // versionName 含 "selfuse" 是自用版标志：SelfCheck 会据此断言
         // assets 里必须有 doc_segmentation.tflite（该模型受 GPL-3.0 +

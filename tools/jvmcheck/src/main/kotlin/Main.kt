@@ -180,6 +180,51 @@ fun main(args: Array<String>) {
             if (!ok4) fail++
             println("  ${if (ok4) "✓" else "✗"} 真实图text_photo(受6%上限保护) ${relRect(r4, gw, gh)}")
         }
+
+        // 案例5：弧形顶边（暗色只占带内一部分，整带均值必然漏检）→ 应内裁。
+        val c5 = Mat(H, W, org.opencv.core.CvType.CV_8UC1)
+        c5.setTo(org.opencv.core.Scalar.all(220.0))
+        for (x in 100 until 690 step 10) {
+            val yA = (28.0 * kotlin.math.sin(Math.PI * (x - 100) / 600.0)).toInt()
+            val yB = (28.0 * kotlin.math.sin(Math.PI * (x + 10 - 100) / 600.0)).toInt()
+            Imgproc.line(c5, Point(x.toDouble(), yA.toDouble()),
+                Point((x + 10).toDouble(), yB.toDouble()), org.opencv.core.Scalar.all(20.0), 8)
+        }
+        val r5 = try { InkSkew.trimDarkEdgesRect(c5) } catch (e: Throwable) {
+            println("  ✗ 弧形顶边: EXCEPTION ${e.javaClass.simpleName}"); fail++; null
+        }
+        c5.release()
+        val ok5 = r5 != null && r5[1] >= 20 && r5[1] <= 48
+        if (!ok5) fail++
+        println("  ${if (ok5) "✓" else "✗"} 弧形顶边(应裁20~48px)     ${relRect(r5, W, H)}")
+
+        // 案例6：贴边的分散字块（每个连通域都很小）→ 不得拼成黑弧误裁。
+        val c6 = Mat(H, W, org.opencv.core.CvType.CV_8UC1)
+        c6.setTo(org.opencv.core.Scalar.all(220.0))
+        for (x in 100 until 700 step 40) {
+            Imgproc.rectangle(c6, Point(x.toDouble(), 0.0),
+                Point((x + 12).toDouble(), 16.0), org.opencv.core.Scalar.all(20.0), -1)
+        }
+        val r6 = try { InkSkew.trimDarkEdgesRect(c6) } catch (e: Throwable) {
+            println("  ✗ 贴边字块: EXCEPTION ${e.javaClass.simpleName}"); fail++; null
+        }
+        c6.release()
+        val ok6 = r6 == null
+        if (!ok6) fail++
+        println("  ${if (ok6) "✓" else "✗"} 贴边分散字块(不应裁)      ${relRect(r6, W, H)}")
+
+        // 案例7：贴边实心表格线（fill≈1）→ 弧形边分支不得误裁。
+        val c7 = Mat(H, W, org.opencv.core.CvType.CV_8UC1)
+        c7.setTo(org.opencv.core.Scalar.all(220.0))
+        Imgproc.rectangle(c7, Point(100.0, 0.0), Point(700.0, 6.0),
+            org.opencv.core.Scalar.all(20.0), -1)
+        val r7 = try { InkSkew.trimDarkEdgesRect(c7) } catch (e: Throwable) {
+            println("  ✗ 贴边表格线: EXCEPTION ${e.javaClass.simpleName}"); fail++; null
+        }
+        c7.release()
+        val ok7 = r7 == null
+        if (!ok7) fail++
+        println("  ${if (ok7) "✓" else "✗"} 贴边实心表格线(不应裁)    ${relRect(r7, W, H)}")
     }
 
     println("== 二级平坦化冒烟（P85 自适应基准，彩色全链路真实执行）==")
@@ -250,6 +295,65 @@ fun main(args: Array<String>) {
             fail++
         } finally {
             bin.release(); gray.release()
+        }
+    }
+
+    println("== 黑白贴边弧线清理（黑弧应清、正文应留、实心表格线不误删）==")
+    run {
+        fun darkCount(m: Mat, x: Int, y: Int, rw: Int, rh: Int): Int {
+            val r = Mat(m, org.opencv.core.Rect(x, y, rw, rh))
+            val n = (r.total() - Core.countNonZero(r)).toInt()
+            r.release()
+            return n
+        }
+        val w = 800; val h = 1000
+        val gray = Mat(h, w, org.opencv.core.CvType.CV_8UC1)
+        gray.setTo(org.opencv.core.Scalar.all(245.0))
+        // 顶部弧形暗边 + 左侧斜细边（形态与真机 WPS 对拍样张一致）。
+        for (x in 100 until 690 step 10) {
+            val yA = (28.0 * kotlin.math.sin(Math.PI * (x - 100) / 600.0)).toInt()
+            val yB = (28.0 * kotlin.math.sin(Math.PI * (x + 10 - 100) / 600.0)).toInt()
+            Imgproc.line(gray, Point(x.toDouble(), yA.toDouble()),
+                Point((x + 10).toDouble(), yB.toDouble()), org.opencv.core.Scalar.all(15.0), 8)
+        }
+        Imgproc.line(gray, Point(0.0, 300.0), Point(4.0, 520.0),
+            org.opencv.core.Scalar.all(15.0), 5)
+        // 页内正文笔画：清理贴边黑弧时必须原样保留。
+        Imgproc.line(gray, Point(150.0, 400.0), Point(650.0, 400.0),
+            org.opencv.core.Scalar.all(15.0), 4)
+        val bin = Mat()
+        try {
+            InkSkew.binarizeBlackWhite(gray, bin)
+            val topAfter = darkCount(bin, 0, 0, w, 60)
+            val leftAfter = darkCount(bin, 0, 250, 20, 320)
+            val bodyAfter = darkCount(bin, 140, 385, 520, 30)
+            val ok = topAfter <= 20 && leftAfter <= 20 && bodyAfter >= 1500
+            if (!ok) fail++
+            println("  ${if (ok) "✓" else "✗"} 黑弧残留 顶=$topAfter 左=$leftAfter  正文黑像素=$bodyAfter")
+        } catch (e: Throwable) {
+            println("  ✗ 黑白弧线: EXCEPTION ${e.javaClass.simpleName}: ${e.message?.lineSequence()?.firstOrNull()}")
+            fail++
+        } finally {
+            gray.release(); bin.release()
+        }
+
+        // 对照：贴边实心表格线 fill≈1，不属于弧形背景，必须保留。
+        val table = Mat(h, w, org.opencv.core.CvType.CV_8UC1)
+        table.setTo(org.opencv.core.Scalar.all(245.0))
+        Imgproc.rectangle(table, Point(100.0, 0.0), Point(700.0, 6.0),
+            org.opencv.core.Scalar.all(15.0), -1)
+        val tableBin = Mat()
+        try {
+            InkSkew.binarizeBlackWhite(table, tableBin)
+            val tableAfter = darkCount(tableBin, 90, 0, 620, 20)
+            val ok = tableAfter >= 3500
+            if (!ok) fail++
+            println("  ${if (ok) "✓" else "✗"} 贴边实心表格线保留黑像素=$tableAfter")
+        } catch (e: Throwable) {
+            println("  ✗ 表格线: EXCEPTION ${e.javaClass.simpleName}: ${e.message?.lineSequence()?.firstOrNull()}")
+            fail++
+        } finally {
+            table.release(); tableBin.release()
         }
     }
 
