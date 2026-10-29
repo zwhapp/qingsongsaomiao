@@ -1,21 +1,46 @@
 package com.openscan.docscan.core
 
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
+import android.graphics.Paint
 import android.util.Log
+import org.opencv.android.Utils
+import org.opencv.core.Mat
+import org.opencv.core.MatOfByte
+import org.opencv.core.MatOfInt
+import org.opencv.imgcodecs.Imgcodecs
+import org.opencv.imgproc.Imgproc
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.nio.charset.StandardCharsets
+import java.util.zip.Deflater
 
 /**
- * 可搜索 PDF 生成器。
+ * 可搜索 PDF 生成器（体积优化版）。
  *
  * ## 为什么不用 Android 的 PdfDocument
  *
  * `android.graphics.pdf.PdfDocument` 把 `drawText` 渲染成矢量路径，
  * 产出的 PDF 里**没有任何文字对象**——搜不到、选不中、复制不了。
  * 要做到真正可搜索，必须直接写 PDF 的文本操作符（`BT` / `Tj` / `ET`）
- * 并嵌入字体。所以这里手写 PDF 结构。
+ * 并保留 `ToUnicode` 映射。所以这里手写 PDF 结构。
+ *
+ * ## 体积优化要点（对标 WPS）
+ *
+ * 1. **不嵌入整份字体**。文字层用渲染模式 3（不可见），字形永不绘制，
+ *    因此不需要字形轮廓；只保留 `ToUnicode` CMap（~1KB）即可保证
+ *    复制/搜索拿到正确中文（Acrobat / PDF.js / Chrome 均按 ToUnicode 抽取）。
+ *    这把过去整份嵌入 NotoSansCJK（10~25MB）的固定开销砍到可忽略。
+ * 2. **图像降采样**：[PdfExportConfig.imageMaxLongEdge] 默认 2200px（≈A4 200DPI），
+ *    避免把 4000~6000px 原图原样塞进 PDF。
+ * 3. **灰度**：文档本质是灰度/黑白，默认转 `/DeviceGray` 单通道
+ *    （OpenCV 编码真·单通道 JPEG），比 RGB 少 2/3 数据。
+ * 4. **JPEG 质量 72**：文档扫描足够清晰，远小于默认的 88。
+ * 5. **黑白页单色通道**：`enhanceMode == BLACK_WHITE` 的页走 1-bit +
+ *    `/FlateDecode`（`/DeviceGray /BitsPerComponent 1`），比 JPEG 再小一个数量级。
  *
  * ## 结构
  *
@@ -23,36 +48,43 @@ import java.nio.charset.StandardCharsets
  * %PDF-1.4
  *   1 0 obj  Catalog
  *   2 0 obj  Pages
- *   3 0 obj  Font（Type0 / Identity-H，支持中日韩）
- *   4 0 obj  FontDescriptor
- *   5 0 obj  CIDFont（CIDFontType2）
- *   6 0 obj  FontFile2（嵌入的 TTF 子集）
+ *   3 0 obj  Font（Type0 / Identity-H，非嵌入，仅 ToUnicode）
+ *   4 0 obj  FontDescriptor（无 FontFile）
+ *   5 0 obj  ToUnicode CMap
  *   ...      每页：Page + Contents(XObject: 图像 + 文字层)
  *   xref
  *   trailer
  * ```
  *
- * ## 文字层原理
- *
- * 每页放两层：
- *   1. 图像 XObject —— 用户看到的扫描图
- *   2. 文本对象   —— 不可见（渲染模式 3），但可被搜索、选中、复制
- *
  * 文字定位用 OCR 给出的边界框，按图像坐标 → PDF 坐标换算。
- *
- * ## 字体
- *
- * 需要嵌入一个含中文字形的 TTF。Android 系统自带
- * `/system/fonts/NotoSansCJK-Regular.ttc`（或 fallback），
- * 用 Identity-H 编码直接按 Unicode 码位索引字形。
  */
 class SearchablePdfWriter {
+
+    /** PDF 导出配置：默认即对标 WPS 的紧凑体积。 */
+    data class PdfExportConfig(
+        /** 嵌入图像长边上限（像素）。0 表示不限制。默认 2200 ≈ A4 200DPI。 */
+        val imageMaxLongEdge: Int = 2200,
+        /** 是否默认转灰度。彩色照片页可用 [Page.forceColor] 覆盖。 */
+        val grayscale: Boolean = true,
+        /** JPEG 质量 0~100。文档扫描 70~75 已足够清晰。 */
+        val jpegQuality: Int = 72,
+        /** 是否对黑白增强页启用 1-bit 单色通道（FlateDecode）。 */
+        val monochromeEnabled: Boolean = true
+    )
 
     /** 一页的输入。 */
     data class Page(
         val bitmap: Bitmap,
         /** OCR 结果；为空表示这页没有文字层 */
-        val ocr: OcrEngine.PageResult? = null
+        val ocr: OcrEngine.PageResult? = null,
+        /**
+         * 可选的单色位图（8-bit，墨=0/背景=255）。非 null 且
+         * [PdfExportConfig.monochromeEnabled] 为真时，优先用 1-bit 通道，
+         * 体积远小于 JPEG。
+         */
+        val monoBitmap: Bitmap? = null,
+        /** 强制保留彩色（如原图/照片页），覆盖全局灰度设置。 */
+        val forceColor: Boolean = false
     )
 
     /**
@@ -60,19 +92,18 @@ class SearchablePdfWriter {
      *
      * @param output     目标文件
      * @param pages      页面列表
+     * @param config     体积/质量配置
      * @param onProgress 进度回调 0f..1f
      */
     fun write(
         output: File,
         pages: List<Page>,
+        config: PdfExportConfig = PdfExportConfig(),
         onProgress: (Float) -> Unit = {}
     ) {
         require(pages.isNotEmpty()) { "至少要有一页" }
 
-        val fontData = loadChineseFont()
-        if (fontData == null) {
-            Log.w(TAG, "未找到可用中文字体，文字层将缺失（PDF 仍可正常查看）")
-        }
+        val needFont = pages.any { it.ocr != null && it.ocr.lines.isNotEmpty() }
 
         val objects = PdfObjectTable()
         val pageObjectIds = ArrayList<Int>()
@@ -82,14 +113,12 @@ class SearchablePdfWriter {
         val pagesId = objects.reserve()
 
         var fontId = -1
-        var fontFileId = -1
         var fontDescriptorId = -1
         var toUnicodeId = -1
 
-        if (fontData != null) {
+        if (needFont) {
             fontId = objects.reserve()
             fontDescriptorId = objects.reserve()
-            fontFileId = objects.reserve()
             toUnicodeId = objects.reserve()
         }
 
@@ -100,20 +129,54 @@ class SearchablePdfWriter {
             val pageId = objects.reserve()
             pageObjectIds.add(pageId)
 
-            // 图像 XObject：统一转成 RGB JPEG 以控制体积
-            val jpeg = compressToJpeg(page.bitmap, quality = 88)
+            // 图像 XObject：黑白单色 > 灰度/彩色 JPEG
+            val useMono = config.monochromeEnabled && page.monoBitmap != null
+            val spec: ImageSpec = if (useMono) {
+                val mono = page.monoBitmap!!
+                val bytes = encodeMonochrome(mono)
+                ImageSpec(
+                    data = bytes,
+                    cs = "/DeviceGray",
+                    bits = 1,
+                    flt = "/FlateDecode",
+                    width = mono.width,
+                    height = mono.height
+                )
+            } else {
+                val prepared = downsampleIfNeeded(page.bitmap, config.imageMaxLongEdge)
+                val effectiveGray = config.grayscale && !page.forceColor
+                val (bytes, cs) = encodeImage(prepared, effectiveGray, config.jpegQuality)
+                if (prepared !== page.bitmap) prepared.recycle()
+                ImageSpec(
+                    data = bytes,
+                    cs = cs,
+                    bits = 8,
+                    flt = "/DCTDecode",
+                    width = prepared.width,
+                    height = prepared.height
+                )
+            }
+            val imgBytes = spec.data
+            val colorSpace = spec.cs
+            val bpc = spec.bits
+            val filter = spec.flt
+            val w = spec.width
+            val h = spec.height
+
+            val imgDict = buildString {
+                append("<< /Type /XObject /Subtype /Image ")
+                append("/Width $w /Height $h ")
+                append("/ColorSpace $colorSpace /BitsPerComponent $bpc ")
+                append("/Filter $filter /Length ${imgBytes.size} >>")
+            }
             objects.set(
                 imageId,
-                ("<< /Type /XObject /Subtype /Image " +
-                        "/Width ${page.bitmap.width} /Height ${page.bitmap.height} " +
-                        "/ColorSpace /DeviceRGB /BitsPerComponent 8 " +
-                        "/Filter /DCTDecode /Length ${jpeg.size} >>")
-                    .toByteArray(StandardCharsets.US_ASCII),
-                stream = jpeg
+                imgDict.toByteArray(StandardCharsets.US_ASCII),
+                stream = imgBytes
             )
 
-            // 页面内容：先铺图像，再叠文字层
-            val content = buildPageContent(page, fontData != null)
+            // 页面内容：先铺图像，再叠文字层（用实际嵌入图尺寸，避免错位）
+            val content = buildPageContent(page, needFont, w, h)
             val contentBytes = content.toByteArray(StandardCharsets.US_ASCII)
             objects.set(
                 contentId,
@@ -121,15 +184,11 @@ class SearchablePdfWriter {
                 stream = contentBytes
             )
 
-            // 页面尺寸用图像的像素尺寸按 72dpi 折算，保持长宽比
-            val pageW = page.bitmap.width.toFloat()
-            val pageH = page.bitmap.height.toFloat()
-            val fontRes = if (fontData != null) " /Font << /F1 $fontId 0 R >>" else ""
-
+            val fontRes = if (needFont) " /Font << /F1 $fontId 0 R >>" else ""
             objects.set(
                 pageId,
                 ("<< /Type /Page /Parent $pagesId 0 R " +
-                        "/MediaBox [0 0 $pageW $pageH] " +
+                        "/MediaBox [0 0 $w $h] " +
                         "/Resources << /XObject << /Im0 $imageId 0 R >>$fontRes >> " +
                         "/Contents $contentId 0 R >>").toByteArray(StandardCharsets.US_ASCII)
             )
@@ -137,8 +196,8 @@ class SearchablePdfWriter {
             onProgress((index + 1).toFloat() / (pages.size + 1))
         }
 
-        // ---- 字体对象 ----
-        if (fontData != null) {
+        // ---- 字体对象（非嵌入，仅 ToUnicode）----
+        if (needFont) {
             objects.set(
                 fontId,
                 ("<< /Type /Font /Subtype /Type0 /BaseFont /NotoSansCJK " +
@@ -147,24 +206,16 @@ class SearchablePdfWriter {
                     .toByteArray(StandardCharsets.US_ASCII)
             )
 
+            // 无 FontFile：文字层为渲染模式 3 不可见，不需要字形轮廓；
+            // 抽取由 ToUnicode 驱动，与是否嵌入字体无关。
             objects.set(
                 fontDescriptorId,
                 ("<< /Type /FontDescriptor /FontName /NotoSansCJK /Flags 4 " +
                         "/FontBBox [-1000 -500 3000 1500] /ItalicAngle 0 /Ascent 1160 " +
-                        "/Descent -320 /CapHeight 1160 /StemV 80 " +
-                        "/FontFile2 $fontFileId 0 R >>")
+                        "/Descent -320 /CapHeight 1160 /StemV 80 >>")
                     .toByteArray(StandardCharsets.US_ASCII)
             )
 
-            objects.set(
-                fontFileId,
-                "<< /Length ${fontData.size} /Length1 ${fontData.size} >>"
-                    .toByteArray(StandardCharsets.US_ASCII),
-                stream = fontData
-            )
-
-            // Identity-H 下 Unicode 与 CID 一致，ToUnicode 可以退化为恒等映射。
-            // 这里给一个最小可用映射：覆盖 BMP 中常见的可打印区间。
             val cMap = buildIdentityToUnicodeCMap()
             objects.set(
                 toUnicodeId,
@@ -193,6 +244,16 @@ class SearchablePdfWriter {
 
         onProgress(1f)
     }
+
+    /** 图像规格的临时载体（data class 以便后续扩展/校验）。 */
+    private data class ImageSpec(
+        val data: ByteArray,
+        val cs: String,
+        val bits: Int,
+        val flt: String,
+        val width: Int,
+        val height: Int
+    )
 
     // ---------------------------------------------------------------- ToUnicode
 
@@ -255,11 +316,14 @@ class SearchablePdfWriter {
      * 图像用 `cm` 变换矩阵铺满页面（PDF 坐标系原点在左下角，而图像
      * 采样原点在左上角，所以要翻转 Y 轴）。
      * 文字层用渲染模式 3 设为不可见。
+     *
+     * @param imgW/imgH 实际嵌入图像的像素尺寸（单色/降采样后可能与原图不同，
+     *                  必须用它来铺图，文字层坐标亦基于此空间）
      */
-    private fun buildPageContent(page: Page, hasFont: Boolean): String {
+    private fun buildPageContent(page: Page, hasFont: Boolean, imgW: Int, imgH: Int): String {
         val sb = StringBuilder()
-        val w = page.bitmap.width.toFloat()
-        val h = page.bitmap.height.toFloat()
+        val w = imgW.toFloat()
+        val h = imgH.toFloat()
 
         // ---- 1. 图像：铺满整页 ----
         sb.append("q\n")
@@ -347,155 +411,114 @@ class SearchablePdfWriter {
         return s.trimEnd('0').trimEnd('.')
     }
 
-    // ---------------------------------------------------------------- 字体
+    // ---------------------------------------------------------------- 图像编码
+
+    /** 长边超出上限则等比缩小（避免把超大原图塞进 PDF，也防 OOM）。 */
+    private fun downsampleIfNeeded(bitmap: Bitmap, maxLongEdge: Int): Bitmap {
+        if (maxLongEdge <= 0) return bitmap
+        val longEdge = maxOf(bitmap.width, bitmap.height)
+        if (longEdge <= maxLongEdge) return bitmap
+        val scale = maxLongEdge.toFloat() / longEdge
+        val w = maxOf(1, (bitmap.width * scale).toInt())
+        val h = maxOf(1, (bitmap.height * scale).toInt())
+        return Bitmap.createScaledBitmap(bitmap, w, h, true)
+    }
 
     /**
-     * 加载一个含中文字形的 TTF。
+     * 编码图像为 JPEG 字节，返回 (字节, 颜色空间)。
      *
-     * 注意：这里返回的是**整份字体文件**。生产环境更严谨的做法是
-     * 做子集化（subset）只嵌入实际用到的字形，能把体积压到几十 KB；
-     * 但子集化需要解析并重建 TTF 表结构，实现复杂。
-     * 当前直接嵌入完整字体，牺牲体积换取可靠性。
+     * - 灰度：OpenCV 转 CV_8UC1 后编码**单通道 JPEG** → `/DeviceGray`（真 8-bit 灰度）。
+     * - 彩色：RGB JPEG → `/DeviceRGB`。
+     * 用 OpenCV 编码是为了拿到"真正的单通道灰度 JPEG"（Android Bitmap 无法原生输出单通道 JPEG）。
+     * 若 OpenCV 不可用，退化为 `Bitmap.compress`（RGB）。
      */
-    private fun loadChineseFont(): ByteArray? {
-        val candidates = listOf(
-            "/system/fonts/NotoSansCJK-Regular.ttc",
-            "/system/fonts/NotoSansSC-Regular.otf",
-            "/system/fonts/DroidSansFallbackFull.ttf",
-            "/system/fonts/DroidSansFallback.ttf",
-            "/system/fonts/NotoSansCJKsc-Regular.otf"
-        )
+    private fun encodeImage(
+        bitmap: Bitmap,
+        grayscale: Boolean,
+        quality: Int
+    ): Pair<ByteArray, String> {
+        return try {
+            val rgba = Mat()
+            Utils.bitmapToMat(bitmap, rgba)
+            val params = MatOfInt(Imgcodecs.IMWRITE_JPEG_QUALITY, quality)
+            val buf = MatOfByte()
+            val cs = if (grayscale) {
+                val gray = Mat()
+                Imgproc.cvtColor(rgba, gray, Imgproc.COLOR_RGBA2GRAY)
+                Imgcodecs.imencode(".jpg", gray, buf, params)
+                gray.release()
+                "/DeviceGray"
+            } else {
+                val bgr = Mat()
+                Imgproc.cvtColor(rgba, bgr, Imgproc.COLOR_RGBA2BGR)
+                Imgcodecs.imencode(".jpg", bgr, buf, params)
+                bgr.release()
+                "/DeviceRGB"
+            }
+            rgba.release()
+            buf.toArray() to cs
+        } catch (e: Exception) {
+            Log.w(TAG, "OpenCV 编码失败，回退 Bitmap.compress: ${e.message}")
+            val rgb = if (grayscale) toGrayBitmap(bitmap) else bitmap
+            val bos = ByteArrayOutputStream()
+            rgb.compress(Bitmap.CompressFormat.JPEG, quality, bos)
+            if (rgb !== bitmap) rgb.recycle()
+            bos.toByteArray() to "/DeviceRGB"
+        }
+    }
 
-        for (path in candidates) {
-            val f = File(path)
-            if (!f.exists() || !f.canRead()) continue
-            return runCatching {
-                val bytes = f.readBytes()
-                // TTC（字体集合）需要提取第一个字体，PDF 不接受 TTC 容器
-                if (bytes.size >= 4 &&
-                    bytes[0] == 't'.code.toByte() &&
-                    bytes[1] == 't'.code.toByte() &&
-                    bytes[2] == 'c'.code.toByte() &&
-                    bytes[3] == 'T'.code.toByte()
-                ) {
-                    extractFirstFromTtc(bytes)
-                } else {
-                    bytes
+    /** 用 ColorMatrix 把位图去饱和成灰度（仅作 OpenCV 不可用时的回退）。 */
+    private fun toGrayBitmap(src: Bitmap): Bitmap {
+        val cm = ColorMatrix().apply { setSaturation(0f) }
+        val paint = Paint().apply { colorFilter = ColorMatrixColorFilter(cm) }
+        val out = Bitmap.createBitmap(src.width, src.height, Bitmap.Config.ARGB_8888)
+        Canvas(out).drawBitmap(src, 0f, 0f, paint)
+        return out
+    }
+
+    /**
+     * 把二值位图打包成 1-bit 行（MSB 在前，每行按字节补齐）再用 zlib 压缩。
+     *
+     * 约定：暗像素（墨）= 0 → 黑；亮像素（背景）= 1 → 白。
+     * 配合 `/ColorSpace /DeviceGray /BitsPerComponent 1 /Filter /FlateDecode`，
+     * 渲染器把 0 当黑、1 当白，符合扫描件直觉。
+     */
+    private fun encodeMonochrome(mono: Bitmap): ByteArray {
+        val w = mono.width
+        val h = mono.height
+        val pixels = IntArray(w * h)
+        mono.getPixels(pixels, 0, w, 0, 0, w, h)
+
+        val rowBytes = (w + 7) / 8
+        val data = ByteArray(rowBytes * h)
+        for (y in 0 until h) {
+            val rowBase = y * rowBytes
+            val pixBase = y * w
+            for (x in 0 until w) {
+                val px = pixels[pixBase + x]
+                val r = px shr 16 and 0xFF
+                val g = px shr 8 and 0xFF
+                val b = px and 0xFF
+                val lum = 0.299 * r + 0.587 * g + 0.114 * b
+                if (lum >= 128) { // 亮 → 白 → bit=1
+                    val byteIndex = rowBase + (x shr 3)
+                    data[byteIndex] = (data[byteIndex].toInt() or (0x80 ushr (x and 7))).toByte()
                 }
-            }.getOrElse { e ->
-                Log.w(TAG, "读取字体失败 $path: ${e.message}")
-                null
+                // 暗 → 黑 → bit=0（data 已初始化为 0）
             }
         }
 
-        return null
-    }
-
-    /**
-     * 从 TTC（TrueType Collection）中提取第一个字体，转成独立 TTF。
-     *
-     * TTC 结构：
-     *   'ttcf' | version(4) | numFonts(4) | offsetTable[numFonts] | 各字体数据
-     *
-     * 提取方式：读出第一个字体的 offset，然后从该处起把整个字体数据
-     * 连同它引用的所有表重新构造成独立 TTF。
-     */
-    private fun extractFirstFromTtc(ttc: ByteArray): ByteArray {
-        fun u32(off: Int): Long =
-            ((ttc[off].toLong() and 0xFF) shl 24) or
-                    ((ttc[off + 1].toLong() and 0xFF) shl 16) or
-                    ((ttc[off + 2].toLong() and 0xFF) shl 8) or
-                    (ttc[off + 3].toLong() and 0xFF)
-
-        fun u16(off: Int): Int =
-            ((ttc[off].toInt() and 0xFF) shl 8) or (ttc[off + 1].toInt() and 0xFF)
-
-        val numFonts = u32(8).toInt()
-        if (numFonts <= 0) throw IllegalStateException("TTC 内没有字体")
-
-        val fontOffset = u32(12).toInt()      // 第一个字体的 sfnt 起始
-        val numTables = u16(fontOffset + 4)
-
-        // 收集各表的原始数据
-        data class Table(val tag: String, val data: ByteArray)
-
-        val tables = ArrayList<Table>(numTables)
-        for (i in 0 until numTables) {
-            val rec = fontOffset + 12 + i * 16
-            val tag = String(ttc, rec, 4, StandardCharsets.US_ASCII)
-            val offset = u32(rec + 8).toInt()
-            val length = u32(rec + 12).toInt()
-            if (offset + length > ttc.size) continue
-            tables.add(Table(tag, ttc.copyOfRange(offset, offset + length)))
-        }
-
-        if (tables.isEmpty()) throw IllegalStateException("TTC 内未解析出字体表")
-
-        // 按 tag 排序（TTF 规范要求）
-        tables.sortBy { it.tag }
-
+        val def = Deflater(Deflater.BEST_COMPRESSION)
+        def.setInput(data)
+        def.finish()
         val out = ByteArrayOutputStream()
-        fun w32(v: Int) {
-            out.write((v ushr 24) and 0xFF)
-            out.write((v ushr 16) and 0xFF)
-            out.write((v ushr 8) and 0xFF)
-            out.write(v and 0xFF)
+        val buf = ByteArray(8192)
+        while (!def.finished()) {
+            val n = def.deflate(buf)
+            out.write(buf, 0, n)
         }
-        fun w16(v: Int) {
-            out.write((v ushr 8) and 0xFF)
-            out.write(v and 0xFF)
-        }
-
-        // sfnt 头：保留原版本的 scaler type
-        out.write(ttc, fontOffset, 4)
-        w16(numTables)
-
-        // 计算 searchRange 等（可为 0，多数解析器接受）
-        var entrySelector = 0
-        var pow2 = 1
-        while (pow2 * 2 <= numTables) { pow2 *= 2; entrySelector++ }
-        w16(pow2 * 16)
-        w16(entrySelector)
-        w16(numTables * 16 - pow2 * 16)
-
-        // 表目录 + 表数据（4 字节对齐）
-        var dataOffset = 12 + numTables * 16
-        val offsets = ArrayList<Pair<Table, Int>>()
-        tables.forEach { t ->
-            out.write(t.tag.toByteArray(StandardCharsets.US_ASCII))
-            w32(0)                      // checksum 置 0，多数阅读器容忍
-            w32(dataOffset)
-            w32(t.data.size)
-            offsets.add(t to dataOffset)
-            dataOffset += t.data.size
-            if (dataOffset % 4 != 0) dataOffset += 4 - (dataOffset % 4)
-        }
-
-        offsets.forEach { (t, _) ->
-            out.write(t.data)
-            while (out.size() % 4 != 0) out.write(0)
-        }
-
+        def.end()
         return out.toByteArray()
-    }
-
-    // ---------------------------------------------------------------- 图像压缩
-
-    private fun compressToJpeg(bitmap: Bitmap, quality: Int): ByteArray {
-        val bos = ByteArrayOutputStream()
-        // 图像 XObject 用 DeviceRGB，转成不带 alpha 的位图
-        val rgb = if (bitmap.hasAlpha()) {
-            Bitmap.createBitmap(bitmap.width, bitmap.height, Bitmap.Config.ARGB_8888).also { dst ->
-                val canvas = android.graphics.Canvas(dst)
-                canvas.drawColor(android.graphics.Color.WHITE)
-                canvas.drawBitmap(bitmap, 0f, 0f, null)
-            }
-        } else {
-            bitmap
-        }
-        rgb.compress(Bitmap.CompressFormat.JPEG, quality, bos)
-        if (rgb !== bitmap) rgb.recycle()
-        return bos.toByteArray()
     }
 
     // ---------------------------------------------------------------- 序列化

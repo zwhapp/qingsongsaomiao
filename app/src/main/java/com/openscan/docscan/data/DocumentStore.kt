@@ -5,7 +5,11 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.Environment
 import com.openscan.docscan.core.OcrEngine
+import com.openscan.docscan.core.ScanEnhancer
 import com.openscan.docscan.core.SearchablePdfWriter
+import org.opencv.android.Utils
+import org.opencv.core.Mat
+import org.opencv.imgproc.Imgproc
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -112,20 +116,47 @@ class DocumentStore(private val context: Context) {
      *
      * @param withOcr 是否生成文字层。关掉时导出速度更快、体积更小，但不可搜索。
      */
+    /**
+     * 多页合成 **可搜索** PDF。
+     *
+     * ## 为什么不用 PdfDocument
+     *
+     * `android.graphics.pdf.PdfDocument` 的 `drawText` 会把文字转成矢量路径，
+     * 产出的 PDF 无法搜索、无法选中、无法复制。所以这里改用
+     * [SearchablePdfWriter] 手写 PDF 结构，写入真正的文本对象。
+     *
+     * ## 体积优化（对标 WPS）
+     *
+     * - 读图阶段即按 [SearchablePdfWriter.PdfExportConfig.imageMaxLongEdge]
+     *   把分辨率压到约 200DPI，避免把全分辨率原图塞进 PDF。
+     * - 默认转灰度（`/DeviceGray` 单通道）；`enhanceMode == ORIGINAL` 的页保留彩色。
+     * - `enhanceMode == BLACK_WHITE` 的页复用了 [ScanEnhancer] 二值化，走
+     *   1-bit `FlateDecode` 单色通道，体积远小于 JPEG。
+     * - 文字层为不可见渲染模式，不再整份嵌入中文字体，仅靠 ToUnicode 保证可搜索。
+     *
+     * OCR 失败不会中断导出——那一页退化为纯图片页，其余页照常带文字层。
+     *
+     * @param withOcr 是否生成文字层。关掉时导出速度更快、体积更小，但不可搜索。
+     * @param config  PDF 体积/质量配置（默认对标 WPS 紧凑体积）。
+     */
     suspend fun exportPdf(
         title: String,
         pages: List<PageEntity>,
         withOcr: Boolean = true,
+        config: SearchablePdfWriter.PdfExportConfig = SearchablePdfWriter.PdfExportConfig(),
         onProgress: (Float) -> Unit = {}
     ): File = withContext(Dispatchers.IO) {
         require(pages.isNotEmpty()) { "没有可导出的页面" }
 
         val ocr = if (withOcr) OcrEngine() else null
+        // 先在读图阶段就把分辨率压到目标长边，避免写入阶段二次降采样导致
+        // OCR 坐标与嵌入图错位。
+        val loadEdge = if (config.imageMaxLongEdge > 0) config.imageMaxLongEdge else 0
         try {
             val writerPages = ArrayList<SearchablePdfWriter.Page>(pages.size)
 
             pages.forEachIndexed { index, page ->
-                val bitmap = loadPage(page.fileName)
+                val bitmap = loadPage(page.fileName, maxEdge = loadEdge)
                     ?: throw IllegalStateException("页面文件缺失：${page.fileName}")
 
                 // OCR 占总进度 80%，写 PDF 占 20%，让进度条更贴合实际耗时
@@ -135,22 +166,61 @@ class DocumentStore(private val context: Context) {
                     }
                 }
 
-                writerPages.add(SearchablePdfWriter.Page(bitmap = bitmap, ocr = ocrResult))
+                // 黑白增强页：复用了 ScanEnhancer 二值化，走 1-bit 单色通道（体积最小）
+                var monoBitmap: Bitmap? = null
+                if (config.monochromeEnabled &&
+                    page.enhanceMode == ScanEnhancer.Mode.BLACK_WHITE.name
+                ) {
+                    monoBitmap = runCatching { buildMonoBitmap(bitmap) }.getOrNull()
+                }
+
+                // 原图/彩色页保留彩色，覆盖全局灰度
+                val forceColor = page.enhanceMode == ScanEnhancer.Mode.ORIGINAL.name
+
+                writerPages.add(
+                    SearchablePdfWriter.Page(
+                        bitmap = bitmap,
+                        ocr = ocrResult,
+                        monoBitmap = monoBitmap,
+                        forceColor = forceColor
+                    )
+                )
             }
 
             val out = newExportFile(title, "pdf")
-            SearchablePdfWriter().write(out, writerPages) { p ->
-                onProgress(0.8f + 0.2f * p)
-            }
+            // 写入阶段不再降采样（读图阶段已完成），避免二次缩放
+            SearchablePdfWriter().write(
+                out, writerPages, config.copy(imageMaxLongEdge = 0)
+            ) { p -> onProgress(0.8f + 0.2f * p) }
 
-            // 位图已经写进 PDF，及时释放——多页高清图很占内存
-            writerPages.forEach { runCatching { it.bitmap.recycle() } }
+            // 位图已写进 PDF，及时释放——多页高清图很占内存
+            writerPages.forEach {
+                runCatching { it.bitmap.recycle() }
+                runCatching { it.monoBitmap?.recycle() }
+            }
 
             onProgress(1f)
             out
         } finally {
             ocr?.close()
         }
+    }
+
+    /**
+     * 对位图做迟滞 Sauvola 二值化，得到 8-bit 单色位图（墨=0/背景=255），
+     * 供 PDF 走 1-bit `FlateDecode` 通道。失败抛异常，由调用方兜底回退彩色。
+     */
+    private fun buildMonoBitmap(src: Bitmap): Bitmap {
+        val rgba = Mat()
+        Utils.bitmapToMat(src, rgba)
+        val gray = Mat()
+        Imgproc.cvtColor(rgba, gray, Imgproc.COLOR_RGBA2GRAY)
+        ScanEnhancer.binarizeBlackWhite(gray, gray)
+        val mono = Bitmap.createBitmap(gray.cols(), gray.rows(), Bitmap.Config.ARGB_8888)
+        Utils.matToBitmap(gray, mono)
+        rgba.release()
+        gray.release()
+        return mono
     }
 
     /**
